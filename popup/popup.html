@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Social Data Extractor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Platform Tabs -->
+    <div class="platform-tabs">
+      <button class="tab-btn active" id="tabInstagram" data-platform="instagram">
+        <span class="tab-icon">📸</span> IG
+      </button>
+      <button class="tab-btn" id="tabTikTok" data-platform="tiktok">
+        <span class="tab-icon">🎵</span> TikTok
+      </button>
+      <button class="tab-btn" id="tabThreads" data-platform="threads">
+        <span class="tab-icon">🧵</span> Threads
+      </button>
+      <button class="tab-btn" id="tabX" data-platform="x">
+        <span class="tab-icon">𝕏</span> X
+      </button>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-area">
+        <div class="logo-icon" id="logoIcon">📸</div>
+        <div>
+          <h1 class="title" id="headerTitle">IG Data Extractor</h1>
+          <p class="subtitle" id="headerSubtitle">Post & Reel Scraper</p>
+        </div>
+      </div>
+      <div class="status-pill" id="pageStatus">
+        <span class="status-dot"></span>
+        <span id="pageStatusText">Checking tab...</span>
+      </div>
+    </header>
+
+    <!-- Shortcut Banner (Dynamically loaded) -->
+    <div class="shortcut-banner">
+      <div class="shortcut-info">
+        <span class="shortcut-label">Shortcut:</span>
+        <div class="keys" id="shortcutKeysContainer">
+          <kbd id="shortcutDisplay">Alt+Shift+S</kbd>
+        </div>
+      </div>
+      <button class="btn-link" id="btnManageShortcut" title="Manage shortcuts in Chrome">Manage</button>
+    </div>
+
+    <!-- Primary Action: Scrape Current Page -->
+    <div class="action-card">
+      <button class="btn-primary" id="btnExtractCurrent" disabled>
+        <span class="btn-icon">⚡</span>
+        <span id="btnExtractText">Scrape Current Page</span>
+      </button>
+      <div class="post-preview-info" id="detectedPostInfo" style="display: none;">
+        <span>Detected: </span><b id="detectedShortcode">-</b>
+      </div>
+    </div>
+
+    <!-- Data Summary & Actions -->
+    <div class="stats-row">
+      <div class="stat-box">
+        <span class="stat-number" id="totalPostsCount">0</span>
+        <span class="stat-label" id="statLabel">Saved Posts</span>
+      </div>
+      <div class="quick-actions">
+        <button class="btn-secondary" id="btnDownloadJson" title="Download JSON file">
+          <span id="btnDownloadText">📥 Download ig.json</span>
+        </button>
+        <button class="btn-secondary" id="btnCopyJson" title="Copy all JSON data to clipboard">
+          <span>📋 Copy JSON</span>
+        </button>
+        <button class="btn-secondary" id="btnImportJson" title="Import external JSON file to merge">
+          <span>📂 Import / Merge</span>
+        </button>
+        <input type="file" id="importFileInput" accept=".json" style="display: none;" />
+      </div>
+    </div>
+
+    <!-- Post List Section -->
+    <div class="list-section">
+      <div class="list-header">
+        <span class="list-title" id="listTitle">Collected Post History</span>
+        <button class="btn-danger-text" id="btnClearAll" title="Clear all data">Clear All</button>
+      </div>
+      <div class="post-list" id="postList">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon" id="emptyIcon">📭</div>
+          <p id="emptyText">No data collected yet.</p>
+          <small id="emptySubtext">Open a social post or video and press the shortcut</small>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notification / Status Banner -->
+    <div class="msg-banner" id="msgBanner" style="display: none;"></div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span id="footerText">Data is saved in local storage. Click <b>Download JSON</b> to export the file.</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
