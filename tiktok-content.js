@@ -1159,7 +1159,7 @@
 
     // 3. Fallback for photo slides from DOM if still empty
     if (isPhotoPost && mediaUrlSet.size === 0) {
-      const domImages = document.querySelectorAll('div[class*="DivPhotoPlayer"] img, div[class*="DivSlideContainer"] img, [data-e2e="image-player"] img, div[class*="DivImageWrapper"] img, picture img');
+      const domImages = container.querySelectorAll('div[class*="DivPhotoPlayer"] img, div[class*="DivSlideContainer"] img, [data-e2e="image-player"] img, div[class*="DivImageWrapper"] img, picture img');
       for (const img of domImages) {
         const src = img.src || img.getAttribute('data-src') || '';
         if (src && src.startsWith('http') && !src.includes('avatar')) {
