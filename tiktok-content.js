@@ -1003,7 +1003,7 @@
       video: {
         height: domVideo?.videoHeight || 1024,
         width: domVideo?.videoWidth || 576,
-        duration: domVideo?.duration ? Math.round(domVideo.duration * 1000) : 0,
+        duration: domVideo?.duration ? Number(domVideo.duration) : 0,
         cover: domPoster || domImages[0] || '',
         originCover: domPoster || domImages[0] || '',
         dynamicCover: domPoster || domImages[0] || '',
@@ -1262,14 +1262,20 @@
     if (isNaN(width) || width <= 0) width = 576;
 
     // Duration (in milliseconds, e.g. 31200)
-    let rawDuration = videoObj.duration !== undefined ? Number(videoObj.duration) : (domVideo?.duration ? domVideo.duration : 0);
-    if (isNaN(rawDuration) || rawDuration < 0) rawDuration = 0;
-    let duration = rawDuration;
-    if (rawDuration > 0 && rawDuration < 3600) {
-      duration = Math.round(rawDuration * 1000);
-    } else {
-      duration = Math.round(rawDuration);
+    // Both API itemStruct.video.duration and extractFromTikTokDom store duration in seconds.
+    // Convert explicitly from seconds to milliseconds without magnitude guessing.
+    let rawDurationSeconds = 0;
+    if (typeof videoObj.duration === 'number' || (typeof videoObj.duration === 'string' && videoObj.duration.trim())) {
+      rawDurationSeconds = Number(videoObj.duration);
+    } else if (domVideo?.duration) {
+      rawDurationSeconds = Number(domVideo.duration);
     }
+
+    if (isNaN(rawDurationSeconds) || rawDurationSeconds < 0) {
+      rawDurationSeconds = 0;
+    }
+
+    let duration = Math.round(rawDurationSeconds * 1000);
     if (isPhotoPost) {
       duration = 0;
     }
