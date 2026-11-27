@@ -23,7 +23,12 @@
       const { type, payload } = e.detail || {};
       if (type === 'thread' && payload) {
         if (payload.rootId && payload.thread) {
-          cacheSet(interceptedThreads, String(payload.rootId), payload.thread);
+          const key = String(payload.rootId);
+          const merged = new Map((interceptedThreads.get(key) || []).map((t) => [t.id, t]));
+          for (const t of payload.thread) {
+            if (t && t.id) merged.set(t.id, t);
+          }
+          cacheSet(interceptedThreads, key, Array.from(merged.values()));
         }
         if (payload.rootTweet && payload.rootTweet.id) {
           cacheSet(interceptedTweets, String(payload.rootTweet.id), payload.rootTweet);
