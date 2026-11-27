@@ -1457,7 +1457,6 @@
       shareCount,
       playCount,
       commentCount,
-      comments: commentsDetail,
       commentsDetail,
       collectCount,
       webVideoUrl,
