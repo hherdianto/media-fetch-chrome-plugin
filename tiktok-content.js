@@ -1032,10 +1032,10 @@
 
     const verified = Boolean(author.verified || author.custom_verify || userFallback.verified);
     const signature = author.signature || userFallback.signature || '';
-    const fans = parseAccurateNumber((authorStats.followerCount || authorStats.fans || authorStatsV2.followerCount) ?? userFallback.followerCount ?? 0);
-    const following = parseAccurateNumber((authorStats.followingCount || authorStats.following || authorStatsV2.followingCount) ?? userFallback.followingCount ?? 0);
-    const heart = parseAccurateNumber((authorStats.heartCount || authorStats.heart || authorStatsV2.heartCount) ?? userFallback.heartCount ?? 0);
-    const video = parseAccurateNumber((authorStats.videoCount || authorStats.video || authorStatsV2.videoCount) ?? userFallback.videoCount ?? 0);
+    const fans = [authorStats.followerCount, authorStats.fans, authorStatsV2.followerCount, userFallback.followerCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
+    const following = [authorStats.followingCount, authorStats.following, authorStatsV2.followingCount, userFallback.followingCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
+    const heart = [authorStats.heartCount, authorStats.heart, authorStatsV2.heartCount, userFallback.heartCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
+    const video = [authorStats.videoCount, authorStats.video, authorStatsV2.videoCount, userFallback.videoCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
 
     // Inspect DOM video as fallback/supplement (scoped to active card/modal)
     const domVideo = container ? container.querySelector('video') : document.querySelector('video');
