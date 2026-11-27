@@ -498,7 +498,8 @@ function formatXPost(p) {
     quoted_tweet_results: p.quoted_tweet_results ?? null,
     quoted_tweet: p.quoted_tweet ?? null,
     retweeted_tweet: p.retweeted_tweet ?? null,
-    isConversationControlled: Boolean(p.isConversationControlled ?? false)
+    isConversationControlled: Boolean(p.isConversationControlled ?? false),
+    ...(Array.isArray(p.comments) ? { comments: p.comments } : {})
   };
 }
 
