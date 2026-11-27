@@ -311,7 +311,10 @@
       const avatarEl = scopeEl.querySelector('[data-e2e="user-avatar"] img, img[class*="ImgAvatar"]');
 
       if (fansEl || followEl || likesEl) {
-        const usernameMatch = (window.location.pathname.match(/@([^/?#]+)/) || [])[1] || targetUsername || '';
+        const usernameMatch = headerContainer?.querySelector('[data-e2e="user-title"]')?.textContent.trim().replace(/^@/, '') || '';
+        if (!usernameMatch || !targetUsername || usernameMatch.toLowerCase() !== targetUsername.replace(/^@/, '').toLowerCase()) {
+          return null;
+        }
         const stats = {
           uniqueId: usernameMatch,
           nickname: titleEl ? titleEl.textContent.trim() : usernameMatch,
