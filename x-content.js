@@ -18,7 +18,10 @@
   }
 
   // Listen for real-time broadcasts from x-interceptor.js (MAIN world)
-  window.addEventListener('X_INTERCEPTED_DATA', (e) => {
+  if (typeof window.__xInterceptedDataListener === 'function') {
+    window.removeEventListener('X_INTERCEPTED_DATA', window.__xInterceptedDataListener);
+  }
+  window.addEventListener('X_INTERCEPTED_DATA', window.__xInterceptedDataListener = (e) => {
     try {
       const { type, payload } = e.detail || {};
       if (type === 'thread' && payload) {
