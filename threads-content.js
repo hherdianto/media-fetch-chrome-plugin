@@ -167,16 +167,19 @@
       }
     }
 
-    // Modal or Feed check
-    const modalLinks = Array.from(document.querySelectorAll('a[href*="/post/"]'));
-    for (const link of modalLinks) {
-      const href = link.getAttribute('href') || '';
-      const match = href.match(/(?:@([\w.-]+)\/)?post\/([A-Za-z0-9_-]+)/i);
-      if (match) {
-        return {
-          shortcode: match[2],
-          username: match[1] || ''
-        };
+    // Modal check exclusively within dialog containers to avoid feed false-positives
+    const modalContainer = document.querySelector('div[role="dialog"], [aria-modal="true"]');
+    if (modalContainer) {
+      const modalLinks = Array.from(modalContainer.querySelectorAll('a[href*="/post/"]'));
+      for (const link of modalLinks) {
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/(?:@([\w.-]+)\/)?post\/([A-Za-z0-9_-]+)/i);
+        if (match) {
+          return {
+            shortcode: match[2],
+            username: match[1] || ''
+          };
+        }
       }
     }
 
@@ -218,40 +221,36 @@
   }
 
   /**
-   * Strategy 1: Find post & replies recursively in embedded Relay/JSON tree
+   * Strategy 1: Find post & replies in embedded Relay/JSON tree
+   * Specifically targets direct_replies.edges[].node.posts.edges[] from Barcelona query
    */
-  function findAllThreadDataInObject(rootObj, shortcode) {
+  function findAllThreadDataInObject(rootObj, shortcode, mediaId = null) {
     let mainPost = null;
-    const repliesMap = new Map();
+    let fallbackMainPost = null;
+    const directRepliesMap = new Map();
+    const fallbackRepliesMap = new Map();
+
+    const targetMediaId = mediaId || (shortcode ? shortcodeToMediaId(shortcode) : null);
 
     function traverse(obj) {
       if (!obj || typeof obj !== 'object') return;
 
-      // 1. Direct post match for main post
-      if (obj.code === shortcode || obj.shortcode === shortcode) {
-        if (!mainPost && (obj.caption || obj.text || obj.user)) {
-          mainPost = obj;
-        }
-      }
-
-      // 2. Containing thread items
-      if (obj.containing_thread && Array.isArray(obj.containing_thread.thread_items)) {
-        for (const item of obj.containing_thread.thread_items) {
-          if (item?.post && (item.post.code === shortcode || item.post.shortcode === shortcode)) {
-            mainPost = item.post;
-          }
-        }
-      }
-
-      // 3. Reply threads array (where Threads Relay store nests all comments/replies)
-      if (Array.isArray(obj.reply_threads)) {
-        for (const rt of obj.reply_threads) {
-          if (rt && Array.isArray(rt.thread_items)) {
-            for (const item of rt.thread_items) {
-              if (item?.post && item.post.code !== shortcode && item.post.shortcode !== shortcode) {
-                const pId = String(item.post.pk || item.post.id || item.post.code || item.post.shortcode || '');
-                if (pId && !repliesMap.has(pId)) {
-                  repliesMap.set(pId, item.post);
+      // 0. Primary modern Threads Relay schema: direct_replies.edges[].node.posts.edges[]
+      const dr = obj.direct_replies || obj.text_post_app_info?.direct_replies;
+      if (dr && Array.isArray(dr.edges)) {
+        for (const edge of dr.edges) {
+          const postsEdges = edge?.node?.posts?.edges;
+          if (Array.isArray(postsEdges)) {
+            for (const postEdge of postsEdges) {
+              const p = postEdge?.node;
+              if (p) {
+                const pCode = p.code || p.shortcode || '';
+                const pPk = String(p.pk || (p.id ? String(p.id).split('_')[0] : ''));
+                if (pCode !== shortcode && (!targetMediaId || pPk !== String(targetMediaId)) && (p.caption || p.text || p.user)) {
+                  const pId = String(p.pk || (pCode ? shortcodeToMediaId(pCode) : '') || p.id || pCode || '');
+                  if (pId && !directRepliesMap.has(pId)) {
+                    directRepliesMap.set(pId, p);
+                  }
                 }
               }
             }
@@ -259,32 +258,54 @@
         }
       }
 
-      // 4. Thread items array
-      if (Array.isArray(obj.thread_items)) {
-        for (const item of obj.thread_items) {
-          if (item?.post) {
-            if (item.post.code === shortcode || item.post.shortcode === shortcode) {
-              if (!mainPost) mainPost = item.post;
-            } else {
-              const pId = String(item.post.pk || item.post.id || item.post.code || '');
-              if (pId && !repliesMap.has(pId)) {
-                repliesMap.set(pId, item.post);
+      // 1. Direct posts.edges within node
+      if (obj.posts && Array.isArray(obj.posts.edges) && obj.fetch_token) {
+        for (const postEdge of obj.posts.edges) {
+          const p = postEdge?.node;
+          if (p) {
+            const pCode = p.code || p.shortcode || '';
+            const pPk = String(p.pk || (p.id ? String(p.id).split('_')[0] : ''));
+            if (pCode !== shortcode && (!targetMediaId || pPk !== String(targetMediaId)) && (p.caption || p.text || p.user)) {
+              const pId = String(p.pk || (pCode ? shortcodeToMediaId(pCode) : '') || p.id || pCode || '');
+              if (pId && !directRepliesMap.has(pId)) {
+                directRepliesMap.set(pId, p);
               }
             }
           }
         }
       }
 
-      // 5. Edge-based arrays (GraphQL edges)
-      if (Array.isArray(obj.edges)) {
-        for (const edge of obj.edges) {
-          const node = edge?.node;
-          if (node?.thread_items && Array.isArray(node.thread_items)) {
-            for (const item of node.thread_items) {
-              if (item?.post && item.post.code !== shortcode && item.post.shortcode !== shortcode) {
+      // 2. Identify main root post
+      if (obj.media && typeof obj.media === 'object') {
+        const m = obj.media;
+        const mPk = String(m.pk || (m.id ? String(m.id).split('_')[0] : ''));
+        if (m.code === shortcode || m.shortcode === shortcode || (targetMediaId && mPk === String(targetMediaId))) {
+          if (!mainPost || (!mainPost.text_post_app_info && m.text_post_app_info)) {
+            if (m.caption || m.text || m.user) mainPost = m;
+          }
+        } else if (!fallbackMainPost && m.text_post_app_info?.direct_replies && (!shortcode && !targetMediaId)) {
+          fallbackMainPost = m;
+        }
+      }
+
+      const objPk = String(obj.pk || (obj.id ? String(obj.id).split('_')[0] : ''));
+      if (obj.code === shortcode || obj.shortcode === shortcode || (targetMediaId && objPk === String(targetMediaId))) {
+        if (!mainPost || (!mainPost.text_post_app_info && obj.text_post_app_info)) {
+          if (obj.caption || obj.text || obj.user) {
+            mainPost = obj;
+          }
+        }
+      }
+
+      // 3. Legacy reply_threads array (fallback if direct_replies not found)
+      if (Array.isArray(obj.reply_threads)) {
+        for (const rt of obj.reply_threads) {
+          if (rt && Array.isArray(rt.thread_items)) {
+            for (const item of rt.thread_items) {
+              if (item?.post && item.post.code !== shortcode && item.post.shortcode !== shortcode && (!targetMediaId || String(item.post.pk) !== String(targetMediaId))) {
                 const pId = String(item.post.pk || item.post.id || item.post.code || item.post.shortcode || '');
-                if (pId && !repliesMap.has(pId)) {
-                  repliesMap.set(pId, item.post);
+                if (pId && !fallbackRepliesMap.has(pId)) {
+                  fallbackRepliesMap.set(pId, item.post);
                 }
               }
             }
@@ -301,8 +322,13 @@
 
     traverse(rootObj);
 
-    if (mainPost || repliesMap.size > 0) {
-      return { mainPost, replies: Array.from(repliesMap.values()) };
+    const replies = directRepliesMap.size > 0
+      ? Array.from(directRepliesMap.values())
+      : Array.from(fallbackRepliesMap.values());
+
+    const resolvedMainPost = mainPost || fallbackMainPost;
+    if (resolvedMainPost || replies.length > 0) {
+      return { mainPost: resolvedMainPost, replies };
     }
     return null;
   }
@@ -312,27 +338,40 @@
    */
   function extractFromEmbeddedScripts(shortcode) {
     try {
+      const mediaId = shortcodeToMediaId(shortcode) || '';
       const scripts = Array.from(document.querySelectorAll('script[type="application/json"]'));
       let bestResult = null;
 
       for (const script of scripts) {
         let text = script.textContent;
         if (!text) continue;
-        if (!text.includes(shortcode) && !text.includes('thread_items') && !text.includes('reply_threads')) continue;
+        const hasRelevantContent =
+          text.includes('direct_replies') ||
+          text.includes('BarcelonaPostPage') ||
+          text.includes(shortcode) ||
+          (mediaId && text.includes(mediaId)) ||
+          text.includes('reply_threads');
+        if (!hasRelevantContent) continue;
 
         try {
           text = text.replace(/^for\s*\(\s*;\s*;\s*\)\s*;\s*/, '');
           const json = JSON.parse(text);
-          const found = findAllThreadDataInObject(json, shortcode);
+          const found = findAllThreadDataInObject(json, shortcode, mediaId);
           if (found) {
             if (!bestResult) {
               bestResult = found;
             } else {
               if (!bestResult.mainPost && found.mainPost) bestResult.mainPost = found.mainPost;
-              if (found.replies.length > bestResult.replies.length) bestResult.replies = found.replies;
-            }
-            if (bestResult.mainPost && bestResult.replies.length > 0) {
-              return bestResult;
+              if (Array.isArray(found.replies)) {
+                const existingIds = new Set(bestResult.replies.map(r => String(r.pk || (r.code ? shortcodeToMediaId(r.code) : '') || r.id || '')));
+                for (const r of found.replies) {
+                  const rId = String(r.pk || (r.code ? shortcodeToMediaId(r.code) : '') || r.id || '');
+                  if (rId && !existingIds.has(rId)) {
+                    existingIds.add(rId);
+                    bestResult.replies.push(r);
+                  }
+                }
+              }
             }
           }
         } catch (_) {}
@@ -346,50 +385,75 @@
   }
 
   /**
-   * Helper: Normalize comment node
+   * Helper: Normalize comment node into { id, userId, username, profilePicUrl, isVerified, takenAt, text, likeCount, replyCount, url, is_reply, reply_to_username, reply_to_user_id, reply_to_post_id }
    */
-  function normalizeThreadComment(c) {
+  function normalizeComment(c, parentContext = null) {
     if (!c) return null;
-    const authorObj = c.user || c.owner || {};
-    const text = c.text || c.caption?.text || '';
-    const epoch = c.taken_at || c.created_at || c.created_at_utc || 0;
-    let publishedAt = new Date().toISOString();
-    if (epoch > 0) {
-      try {
-        const ms = epoch > 1e11 ? epoch : epoch * 1000;
-        publishedAt = new Date(ms).toISOString();
-      } catch (_) {}
-    }
+    const user = c.user || c.owner || {};
+    const code = c.code || c.shortcode || '';
+    const pk = String(c.pk || (code ? shortcodeToMediaId(code) : '') || (c.id && !String(c.id).includes('_') ? c.id : '') || (c.id ? String(c.id).split('_')[0] : '') || '');
+    const id = pk || (code ? shortcodeToMediaId(code) : '') || code || '';
+    const userId = String(user.pk || user.id || c.userId || '');
+    const username = user.username || c.username || '';
+    const profilePicUrl = user.profile_pic_url || c.profilePicUrl || '';
+    const isVerified = Boolean(user.is_verified ?? c.isVerified);
 
-    const likeCount = c.like_count !== undefined
-      ? parseAccurateNumber(c.like_count)
-      : (c.comment_like_count !== undefined ? parseAccurateNumber(c.comment_like_count) : 0);
+    const epoch = c.taken_at || c.takenAt || c.created_at || c.created_at_utc || 0;
+    const takenAt = epoch > 0 ? (epoch > 1e11 ? Math.floor(epoch / 1000) : epoch) : Math.floor(Date.now() / 1000);
 
-    const replyCountRaw = c.text_post_app_info?.direct_reply_count ?? c.child_comment_count ?? c.reply_count;
-    const replyCount = replyCountRaw !== undefined ? parseAccurateNumber(replyCountRaw) : 0;
+    const text = (typeof c.text === 'string' ? c.text : '') ||
+                 (typeof c.caption?.text === 'string' ? c.caption.text : '') ||
+                 (typeof c.caption === 'string' ? c.caption : '') || '';
+    const textPostAppInfo = c.text_post_app_info || {};
+    const likeCount = parseAccurateNumber(c.like_count ?? c.likeCount ?? c.comment_like_count ?? 0);
+    const replyCount = parseAccurateNumber(textPostAppInfo.direct_reply_count ?? c.reply_count ?? c.replyCount ?? 0);
 
-    const authorUsername = authorObj.username || '';
-    const commentShortcode = c.code || c.shortcode || '';
-    let commentUrl = '';
-    if (authorUsername && commentShortcode) {
-      commentUrl = `https://www.threads.net/@${authorUsername}/post/${commentShortcode}`;
+    const postDomain = (typeof window !== 'undefined' && window.location?.hostname?.includes('threads.com'))
+      ? 'https://www.threads.com'
+      : 'https://www.threads.net';
+
+    const url = username && code
+      ? `${postDomain}/@${username}/post/${code}`
+      : (c.permalink || c.url || (code ? `${postDomain}/post/${code}` : ''));
+
+    // Extract reply_to info from reply_to_author and reply_to_post_id
+    const rta = textPostAppInfo.reply_to_author || c.reply_to_author || {};
+    const hasReplyIndicators = Boolean(rta.username || rta.pk || rta.id || c.reply_to_username || textPostAppInfo.reply_to_post_id || c.reply_to_post_id || parentContext);
+    const isReply = Boolean(c.is_reply ?? textPostAppInfo.is_reply ?? hasReplyIndicators);
+
+    let replyToUsername = rta.username || c.reply_to_username || '';
+    let replyToUserId = String(rta.pk || rta.id || c.reply_to_user_id || '');
+    let rawReplyToPost = textPostAppInfo.reply_to_post_id || c.reply_to_post_id || c.reply_to_post || '';
+    let replyToPostId = typeof rawReplyToPost === 'object' && rawReplyToPost !== null
+      ? String(rawReplyToPost.pk || (rawReplyToPost.id ? String(rawReplyToPost.id).split('_')[0] : '') || '')
+      : String(rawReplyToPost || '').split('_')[0];
+
+    if (isReply && parentContext) {
+      if (!replyToUsername) {
+        replyToUsername = parentContext.username || '';
+        if (!replyToUserId && parentContext.userId) replyToUserId = parentContext.userId;
+        if (!replyToPostId && parentContext.id) replyToPostId = parentContext.id;
+      } else if (parentContext.username && replyToUsername.toLowerCase() === parentContext.username.toLowerCase()) {
+        if (!replyToUserId && parentContext.userId) replyToUserId = parentContext.userId;
+        if (!replyToPostId && parentContext.id) replyToPostId = parentContext.id;
+      }
     }
 
     return {
-      id: String(c.pk || c.id || (c.code ? shortcodeToMediaId(c.code) : '') || ''),
+      id,
+      userId,
+      username,
+      profilePicUrl,
+      isVerified,
+      takenAt,
       text,
-      url: commentUrl,
-      publishedAt,
-      takenAt: epoch > 0 ? (epoch > 1e11 ? Math.floor(epoch / 1000) : epoch) : Math.floor(Date.now() / 1000),
-      author: {
-        id: String(authorObj.pk || authorObj.id || ''),
-        username: authorObj.username || '',
-        fullName: authorObj.full_name || authorObj.username || '',
-        profilePicUrl: authorObj.profile_pic_url || '',
-        isVerified: Boolean(authorObj.is_verified)
-      },
       likeCount,
-      replyCount
+      replyCount,
+      url,
+      is_reply: isReply,
+      reply_to_username: isReply ? (replyToUsername || null) : null,
+      reply_to_user_id: isReply ? (replyToUserId || null) : null,
+      reply_to_post_id: isReply ? (replyToPostId || null) : null
     };
   }
 
@@ -503,7 +567,7 @@
     let mainArticle = null;
     const articles = Array.from(mainArea.querySelectorAll('article'));
     for (const art of articles) {
-      if (art.querySelector(`a[href*="/${shortcode}"]`)) {
+      if (art.querySelector(`a[href*="/post/${shortcode}"]`)) {
         mainArticle = art;
         break;
       }
@@ -531,41 +595,80 @@
 
     const avatarImg = mainArticle.querySelector('img[alt*="profile"], header img, img');
     const profilePicUrl = avatarImg ? avatarImg.src : '';
+    const isVerified = Boolean(mainArticle.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Terverifikasi"]'));
 
     // 3. Main Post Text
-    let postText = extractReplyCardText(mainArticle, username);
+    let captionText = extractReplyCardText(mainArticle, username);
 
     // 4. Main Post Metrics
     const mainEngagement = extractReplyCardEngagement(mainArticle);
     let likeCount = mainEngagement.likeCount;
-    let replyCount = mainEngagement.replyCount;
+    let directReplyCount = mainEngagement.replyCount;
     let repostCount = mainEngagement.repostCount;
+    let quoteCount = 0;
     let viewCount = 0;
 
-    // View count from thread header (e.g. "14.4K views")
-    const viewsEl = mainArea.querySelector('[aria-label*="view"], [aria-label*="tayangan"]') ||
-                    Array.from(mainArea.querySelectorAll('span, div')).find(el => /\d+([.,]\d+)?\s*(?:k|rb|m|jt)?\s*(?:views|tayangan)/i.test(el.textContent));
-    if (viewsEl) {
-      const vMatch = viewsEl.textContent.match(/([\d.,]+\s*(?:k|rb|m|jt)?)\s*(?:views|tayangan)/i);
-      if (vMatch) viewCount = parseAccurateNumber(vMatch[1]);
+    // View count / quote count if available
+    const quotesEl = (mainArticle || mainArea).querySelector('[aria-label*="quote"], [aria-label*="kutipan"]');
+    if (quotesEl) {
+      const qNum = parseAccurateNumber(quotesEl.textContent || quotesEl.getAttribute('aria-label'));
+      if (qNum > 0) quoteCount = qNum;
     }
 
-    // 5. Main Post Timestamp
-    let publishedAt = new Date().toISOString();
+    const viewCandidates = Array.from(mainArticle.querySelectorAll('span, div[aria-label]'));
+    for (const el of viewCandidates) {
+      if (el.closest('button, [role="button"], a[href*="/post/"]')) continue;
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      const text = (el.textContent || '').trim().toLowerCase();
+      const combined = aria + ' ' + text;
+      if (combined.includes('reply') || combined.includes('balas') || combined.includes('comment') || combined.includes('komentar')) continue;
+
+      const viewMatch = combined.match(/\b([\d.,]+)\s*(?:jt|juta|m|rb|ribu|k|b|miliar)?\s*(?:views?|tayangan)\b/i);
+      if (viewMatch) {
+        const num = parseAccurateNumber(viewMatch[0]);
+        if (num > 0) {
+          viewCount = num;
+          break;
+        }
+      }
+    }
+
+    // 5. Main Post Images
+    let imageUrl = '';
+    let thumbnailUrl = '';
+    const postImgs = Array.from(mainArticle.querySelectorAll('img')).filter((img) => {
+      if (img === avatarImg) return false;
+      if (img.closest('header, [role="button"]')) return false;
+      const src = img.src || '';
+      return src.startsWith('http') && (img.clientWidth > 80 || img.naturalWidth > 80 || /cdninstagram|threads/i.test(src));
+    });
+    if (postImgs.length > 0) {
+      imageUrl = postImgs[0].src;
+      thumbnailUrl = postImgs[postImgs.length - 1].src;
+    }
+
+    // 6. Main Post Timestamp
     let takenAt = Math.floor(Date.now() / 1000);
     const timeEl = mainArticle.querySelector('time[datetime]');
     if (timeEl) {
       const dt = timeEl.getAttribute('datetime');
       if (dt) {
         try {
-          publishedAt = new Date(dt).toISOString();
           takenAt = Math.floor(new Date(dt).getTime() / 1000);
         } catch (_) {}
       }
     }
 
-    // 6. Extract Reply Comments
-    const comments = [];
+    const postId = shortcodeToMediaId(shortcode) || shortcode || '';
+    const userId = '';
+
+    const postDomain = window.location.hostname.includes('threads.com') ? 'https://www.threads.com' : 'https://www.threads.net';
+    const postUrl = username
+      ? `${postDomain}/@${username}/post/${shortcode}`
+      : window.location.href.split('?')[0];
+
+    // 7. Extract Reply Comments
+    const replies = [];
     const visitedPermalinks = new Set();
     const visitedCards = new Set();
 
@@ -596,6 +699,10 @@
 
       if (!cardEl || visitedCards.has(cardEl)) continue;
       if (cardEl === mainArticle || (mainArticle && cardEl.contains(mainArticle))) continue;
+      if (mainArticle && mainArticle !== mainArea && typeof mainArticle.compareDocumentPosition === 'function') {
+        const pos = mainArticle.compareDocumentPosition(cardEl);
+        if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      }
       visitedCards.add(cardEl);
 
       // Check permalink to get reply shortcode and media ID
@@ -610,30 +717,19 @@
       if (replyShortcode && visitedPermalinks.has(replyShortcode)) continue;
       if (replyShortcode) visitedPermalinks.add(replyShortcode);
 
-      const replyId = replyShortcode ? (shortcodeToMediaId(replyShortcode) || replyShortcode) : '';
-
-      // Full Name & Avatar
-      let rFullName = rUsername;
-      const rNameEl = cardEl.querySelector('header a span, h2, a span, [data-pressable-container="true"] span');
-      if (rNameEl && rNameEl.textContent.trim()) {
-        const nameCandidate = rNameEl.textContent.trim();
-        if (nameCandidate.toLowerCase() !== rUsername.toLowerCase()) {
-          rFullName = nameCandidate;
-        }
-      }
+      const replyPk = replyShortcode ? (shortcodeToMediaId(replyShortcode) || replyShortcode) : '';
 
       const rAvatarImg = cardEl.querySelector('img[alt*="profile"], header img, img');
       const rAvatar = rAvatarImg ? rAvatarImg.src : '';
+      const isRVerified = Boolean(cardEl.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Terverifikasi"]'));
 
       // Timestamp
-      let rPublishedAt = new Date().toISOString();
       let rTakenAt = Math.floor(Date.now() / 1000);
       const rTimeEl = cardEl.querySelector('time[datetime]');
       if (rTimeEl) {
         const dt = rTimeEl.getAttribute('datetime');
         if (dt) {
           try {
-            rPublishedAt = new Date(dt).toISOString();
             rTakenAt = Math.floor(new Date(dt).getTime() / 1000);
           } catch (_) {}
         }
@@ -648,53 +744,53 @@
 
       let replyUrl = '';
       if (rUsername && replyShortcode) {
-        replyUrl = `https://www.threads.net/@${rUsername}/post/${replyShortcode}`;
+        replyUrl = `${postDomain}/@${rUsername}/post/${replyShortcode}`;
       } else if (permalinkHref) {
-        replyUrl = permalinkHref.startsWith('http') ? permalinkHref : `https://www.threads.net${permalinkHref}`;
+        replyUrl = permalinkHref.startsWith('http') ? permalinkHref : `${postDomain}${permalinkHref}`;
       }
 
-      comments.push({
+      const replyId = replyPk || (replyShortcode ? shortcodeToMediaId(replyShortcode) : '') || replyShortcode;
+
+      replies.push({
         id: replyId,
-        text: rText,
-        url: replyUrl,
-        publishedAt: rPublishedAt,
+        userId: '',
+        username: rUsername,
+        profilePicUrl: rAvatar,
+        isVerified: isRVerified,
         takenAt: rTakenAt,
-        author: {
-          id: '',
-          username: rUsername,
-          fullName: rFullName,
-          profilePicUrl: rAvatar,
-          isVerified: Boolean(cardEl.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Terverifikasi"]'))
-        },
+        text: rText,
         likeCount: rEngagement.likeCount,
-        replyCount: rEngagement.replyCount
+        replyCount: rEngagement.replyCount,
+        url: replyUrl,
+        is_reply: true,
+        reply_to_username: username || null,
+        reply_to_user_id: userId || null,
+        reply_to_post_id: postId || null
       });
     }
 
-    const postUrl = username
-      ? `https://www.threads.net/@${username}/post/${shortcode}`
-      : window.location.href.split('?')[0];
-
     return {
-      id: shortcodeToMediaId(shortcode) || '',
-      shortcode,
-      text: postText,
-      url: postUrl,
-      publishedAt,
-      takenAt,
-      author: {
-        id: '',
+      root_post: {
+        id: postId,
+        userId,
         username,
-        fullName,
         profilePicUrl,
-        isVerified: Boolean(mainArticle.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Terverifikasi"]'))
+        isVerified,
+        shortcode,
+        takenAt,
+        text: captionText,
+        likeCount,
+        replyCount: directReplyCount > 0 ? directReplyCount : (directReplyCount === 0 ? 0 : replies.length),
+        quoteCount,
+        repostCount,
+        viewCount,
+        url: postUrl,
+        is_reply: false,
+        reply_to_username: null,
+        reply_to_user_id: null,
+        reply_to_post_id: null
       },
-      likeCount,
-      replyCount: Math.max(replyCount, comments.length),
-      repostCount,
-      quoteCount: 0,
-      viewCount,
-      comments
+      comments: replies
     };
   }
 
@@ -706,109 +802,177 @@
     const scriptReplies = scriptData?.replies || [];
     const apiComments = apiData?.commentsData?.comments || [];
 
-    // Fallback to DOM
-    const domData = extractFromThreadsDom(shortcode, defaultUsername);
-
     if (!mediaItem) {
-      return domData;
+      return extractFromThreadsDom(shortcode, defaultUsername);
     }
 
-    const id = String(mediaItem.pk || mediaItem.id || shortcodeToMediaId(shortcode) || '');
-    const text = mediaItem.caption?.text || mediaItem.text || domData.text || '';
-
+    const postId = String(mediaItem.pk || (mediaItem.id ? String(mediaItem.id).split('_')[0] : '') || shortcodeToMediaId(shortcode) || '');
     const authorObj = mediaItem.user || mediaItem.owner || {};
-    const username = authorObj.username || defaultUsername || domData.author.username || '';
-    const fullName = authorObj.full_name || username || domData.author.fullName || '';
-    const profilePicUrl = authorObj.profile_pic_url || domData.author.profilePicUrl || '';
-    const isVerified = Boolean(authorObj.is_verified || domData.author.isVerified);
+    const userId = String(authorObj.pk || authorObj.id || '');
+    const username = authorObj.username || defaultUsername || '';
+    let profilePicUrl = authorObj.profile_pic_url || '';
+    const isVerified = Boolean(authorObj.is_verified);
+    const text = (typeof mediaItem.caption?.text === 'string' ? mediaItem.caption.text : '') ||
+                 (typeof mediaItem.caption === 'string' ? mediaItem.caption : '') ||
+                 (typeof mediaItem.text === 'string' ? mediaItem.text : '') || '';
 
-    const postUrl = username
-      ? `https://www.threads.net/@${username}/post/${shortcode}`
-      : `https://www.threads.net/post/${shortcode}`;
+    const postDomain = window.location.hostname.includes('threads.com') ? 'https://www.threads.com' : 'https://www.threads.net';
+    const postUrl = username && shortcode
+      ? `${postDomain}/@${username}/post/${shortcode}`
+      : `${postDomain}/post/${shortcode}`;
 
-    const epoch = mediaItem.taken_at || mediaItem.created_at || domData.takenAt;
-    let publishedAt = domData.publishedAt;
-    if (epoch > 0) {
-      try {
-        const ms = epoch > 1e11 ? epoch : epoch * 1000;
-        publishedAt = new Date(ms).toISOString();
-      } catch (_) {}
-    }
-
-    const likeCount = mediaItem.like_count !== undefined
-      ? parseAccurateNumber(mediaItem.like_count)
-      : domData.likeCount;
+    const epoch = mediaItem.taken_at || mediaItem.created_at || mediaItem.created_at_utc || 0;
+    let takenAt = epoch > 0 ? (epoch > 1e11 ? Math.floor(epoch / 1000) : epoch) : Math.floor(Date.now() / 1000);
 
     const textPostAppInfo = mediaItem.text_post_app_info || {};
-    const replyCountRaw = textPostAppInfo.direct_reply_count ?? mediaItem.comment_count ?? mediaItem.reply_count;
-    const repostCountRaw = textPostAppInfo.repost_count ?? textPostAppInfo.reshare_count ?? mediaItem.repost_count;
-    const quoteCountRaw = textPostAppInfo.quote_count ?? mediaItem.quote_count;
+    const likeCount = parseAccurateNumber(mediaItem.like_count ?? 0);
+    const repostCount = parseAccurateNumber(textPostAppInfo.repost_count ?? mediaItem.repost_count ?? 0);
+    const quoteCount = parseAccurateNumber(textPostAppInfo.quote_count ?? mediaItem.quote_count ?? 0);
+    let viewCount = parseAccurateNumber(
+      mediaItem.view_count ??
+      mediaItem.views ??
+      mediaItem.views_count ??
+      textPostAppInfo.view_count ??
+      textPostAppInfo.views_count ??
+      0
+    );
 
-    // Normalizing comments: prioritize script replies or API comments, fallback to DOM
+    const rootRta = textPostAppInfo.reply_to_author || mediaItem.reply_to_author || {};
+    const rootHasReplyIndicators = Boolean(rootRta.username || rootRta.pk || rootRta.id || mediaItem.reply_to_username || textPostAppInfo.reply_to_post_id || mediaItem.reply_to_post_id);
+    const isReply = Boolean(mediaItem.is_reply ?? textPostAppInfo.is_reply ?? (rootHasReplyIndicators ? true : false));
+    const replyToUsername = isReply ? (rootRta.username || mediaItem.reply_to_username || null) : null;
+    const replyToUserId = isReply ? (String(rootRta.pk || rootRta.id || mediaItem.reply_to_user_id || '') || null) : null;
+    let rawRootReplyToPost = textPostAppInfo.reply_to_post_id || mediaItem.reply_to_post_id || '';
+    let rootReplyToPostStr = typeof rawRootReplyToPost === 'object' && rawRootReplyToPost !== null
+      ? String(rawRootReplyToPost.pk || (rawRootReplyToPost.id ? String(rawRootReplyToPost.id).split('_')[0] : '') || '')
+      : String(rawRootReplyToPost || '').split('_')[0];
+    const replyToPostId = isReply ? (rootReplyToPostStr || null) : null;
+
+    // Helper: clean identifier for comment matching
+    const getCleanId = (c) => {
+      if (!c) return '';
+      const code = c.code || c.shortcode || '';
+      const pk = String(c.pk || (c.id ? String(c.id).split('_')[0] : '') || (code ? shortcodeToMediaId(code) : '') || '');
+      return pk || (code ? shortcodeToMediaId(code) : '') || code;
+    };
+    const getCleanReplyTo = (c) => {
+      if (!c) return '';
+      const raw = c.text_post_app_info?.reply_to_post_id || c.reply_to_post_id || c.reply_to_post || '';
+      if (typeof raw === 'object' && raw !== null) {
+        return String(raw.pk || (raw.id ? String(raw.id).split('_')[0] : '') || '');
+      }
+      return String(raw).split('_')[0];
+    };
+
+    // Normalizing comments (merge embedded script replies & API comments)
     let normalizedComments = [];
-    const candidateComments = scriptReplies.length > 0 ? scriptReplies : apiComments;
-    if (Array.isArray(candidateComments) && candidateComments.length > 0) {
-      normalizedComments = candidateComments.map(normalizeThreadComment).filter(Boolean);
+    const commentMap = new Map();
+    for (const c of [...(scriptReplies || []), ...(apiComments || [])]) {
+      const key = getCleanId(c);
+      if (key && !commentMap.has(key)) {
+        commentMap.set(key, c);
+      }
     }
+    const candidateComments = Array.from(commentMap.values());
 
-    // If script had no comments or fewer comments than rendered on DOM, use DOM comments!
-    if (domData.comments.length > 0) {
-      if (normalizedComments.length === 0) {
-        normalizedComments = domData.comments;
-      } else {
-        // Merge any comments from DOM that weren't in script by username or text
-        for (const domC of domData.comments) {
-          const matchedItem = normalizedComments.find(nc =>
-            (nc.id && domC.id && nc.id === domC.id) ||
-            (nc.author?.username?.toLowerCase() === domC.author?.username?.toLowerCase() &&
-             nc.text.trim().toLowerCase() === domC.text.trim().toLowerCase())
-          );
-          if (matchedItem) {
-            if (!matchedItem.url && domC.url) {
-              matchedItem.url = domC.url;
+    // Filter comments to only include genuine replies belonging to root_post
+    // If root_post is a reply itself, exclude ancestor posts that came before root_post
+    let filteredComments = candidateComments;
+    if (postId) {
+      const descendantIds = new Set([postId]);
+      // First pass: direct replies to postId
+      for (const c of candidateComments) {
+        const cReplyTo = getCleanReplyTo(c);
+        if (cReplyTo && cReplyTo === postId) {
+          const cId = getCleanId(c);
+          if (cId) descendantIds.add(cId);
+        }
+      }
+      // Iterative pass: nested replies to descendants
+      let added = true;
+      while (added) {
+        added = false;
+        for (const c of candidateComments) {
+          const cId = getCleanId(c);
+          if (cId && !descendantIds.has(cId)) {
+            const cReplyTo = getCleanReplyTo(c);
+            if (cReplyTo && descendantIds.has(cReplyTo)) {
+              descendantIds.add(cId);
+              added = true;
             }
-          } else {
-            normalizedComments.push(domC);
           }
         }
       }
+
+      // Filter: strictly exclude root_post itself and ancestor posts
+      filteredComments = candidateComments.filter(c => {
+        const cId = getCleanId(c);
+        if (cId === postId || (c.code && c.code === shortcode)) return false;
+        if (replyToPostId && cId === replyToPostId) return false;
+        if (descendantIds.has(cId)) return true;
+        const cTakenAt = c.taken_at || c.takenAt || 0;
+        if (cTakenAt > 0 && takenAt > 0 && cTakenAt < takenAt) return false;
+        if (c.is_reply === false && !descendantIds.has(cId)) return false;
+        if (isReply) return descendantIds.has(cId);
+        return true;
+      });
     }
 
-    const replyCount = replyCountRaw !== undefined
-      ? Math.max(parseAccurateNumber(replyCountRaw), normalizedComments.length)
-      : Math.max(domData.replyCount, normalizedComments.length);
+    const rootContext = { id: postId, userId, username };
+    if (filteredComments.length > 0) {
+      normalizedComments = filteredComments.map(c => normalizeComment(c, rootContext)).filter(Boolean);
+    }
 
-    const repostCount = repostCountRaw !== undefined
-      ? parseAccurateNumber(repostCountRaw)
-      : domData.repostCount;
+    const directReplyCountRaw = textPostAppInfo.direct_reply_count ?? mediaItem.comment_count ?? mediaItem.reply_count;
+    const expectedReplyCount = (directReplyCountRaw !== undefined && directReplyCountRaw !== null && directReplyCountRaw !== '')
+      ? parseAccurateNumber(directReplyCountRaw)
+      : null;
 
-    const quoteCount = quoteCountRaw !== undefined
-      ? parseAccurateNumber(quoteCountRaw)
-      : domData.quoteCount;
+    // Only fallback to DOM comments if script and API extraction returned 0 comments
+    // AND server metadata didn't explicitly confirm the post has 0 replies
+    if (normalizedComments.length === 0 && expectedReplyCount !== 0) {
+      const domData = extractFromThreadsDom(shortcode, defaultUsername);
+      if (domData?.comments?.length > 0) {
+        normalizedComments = domData.comments.map(dc => {
+          if (dc && userId && !dc.reply_to_user_id && dc.reply_to_username && username && dc.reply_to_username.toLowerCase() === username.toLowerCase()) {
+            return { ...dc, reply_to_user_id: userId };
+          }
+          return dc;
+        });
+      }
+      if (viewCount === 0 && domData?.root_post?.viewCount) {
+        viewCount = domData.root_post.viewCount;
+      }
+      if (!profilePicUrl && domData?.root_post?.profilePicUrl) {
+        profilePicUrl = domData.root_post.profilePicUrl;
+      }
+    }
 
-    const viewCount = mediaItem.view_count !== undefined
-      ? parseAccurateNumber(mediaItem.view_count)
-      : domData.viewCount;
+    const replyCount = expectedReplyCount !== null
+      ? expectedReplyCount
+      : normalizedComments.length;
 
     return {
-      id,
-      shortcode,
-      text,
-      url: postUrl,
-      publishedAt,
-      takenAt: epoch > 0 ? (epoch > 1e11 ? Math.floor(epoch / 1000) : epoch) : domData.takenAt,
-      author: {
-        id: String(authorObj.pk || authorObj.id || ''),
+      root_post: {
+        id: postId,
+        userId,
         username,
-        fullName,
         profilePicUrl,
-        isVerified
+        isVerified,
+        shortcode,
+        takenAt,
+        text,
+        likeCount,
+        replyCount,
+        quoteCount,
+        repostCount,
+        viewCount,
+        url: postUrl,
+        is_reply: isReply,
+        reply_to_username: replyToUsername,
+        reply_to_user_id: replyToUserId,
+        reply_to_post_id: replyToPostId
       },
-      likeCount,
-      replyCount,
-      repostCount,
-      quoteCount,
-      viewCount,
       comments: normalizedComments
     };
   }
@@ -878,12 +1042,13 @@
 
             if (response && response.success) {
               const isUpdated = response.isUpdate;
+              const root = normalizedData.root_post;
               showToast({
                 title: isUpdated ? 'Threads Data Updated!' : 'Threads Post Saved!',
-                message: `Post by @${normalizedData.author?.username || 'unknown'} saved to database. Click 'Download threads.json' in popup to export.`,
+                message: `Post by @${root.username || 'unknown'} saved to database. Click 'Download threads.json' in popup to export.`,
                 type: 'success',
                 badge: `Total: ${response.totalCount} posts`,
-                meta: `❤️ ${normalizedData.likeCount.toLocaleString('en-US')} • 💬 ${normalizedData.replyCount.toLocaleString('en-US')} (${(normalizedData.comments?.length || 0).toLocaleString('en-US')} replies)`
+                meta: `❤️ ${root.likeCount.toLocaleString('en-US')} • 💬 ${root.replyCount.toLocaleString('en-US')} (${(normalizedData.comments?.length || 0).toLocaleString('en-US')} comments)`
               });
               resolve({ success: true, post: normalizedData, totalCount: response.totalCount });
             } else {

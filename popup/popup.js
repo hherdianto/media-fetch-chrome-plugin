@@ -386,9 +386,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (currentPlatform === 'tiktok') {
               authorTag = `@${res.post?.authorMeta?.name || 'video'}`;
             } else if (currentPlatform === 'threads') {
-              authorTag = `@${res.post?.author?.username || 'threads'}`;
+              authorTag = `@${res.post?.root_post?.username || res.post?.username || res.post?.author?.username || 'threads'}`;
             } else if (currentPlatform === 'x') {
-              authorTag = `@${res.post?.author?.username || 'tweet'}`;
+              authorTag = `@${res.post?.author?.userName || res.post?.author?.username || 'tweet'}`;
             } else {
               authorTag = `@${res.post?.ownerUsername || 'post'}`;
             }
@@ -463,20 +463,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         comments = typeof item.commentCount === 'number' ? item.commentCount.toLocaleString('en-US') : '0';
         postUrl = item.webVideoUrl || '';
       } else if (currentPlatform === 'threads') {
-        const author = item.author || {};
-        username = author.username || 'unknown';
-        avatar = author.profilePicUrl || DEFAULT_AVATAR;
-        caption = item.text || 'No caption';
-        likes = typeof item.likeCount === 'number' ? item.likeCount.toLocaleString('en-US') : '0';
-        comments = typeof item.replyCount === 'number' ? item.replyCount.toLocaleString('en-US') : '0';
-        postUrl = item.url || '';
+        const root = item.root_post || item;
+        const author = root.author || {};
+        username = root.username || author.username || 'unknown';
+        avatar = root.profilePicUrl || root.thumbnailUrl || root.imageUrl || author.profilePicUrl || DEFAULT_AVATAR;
+        caption = root.text || root.captionText || 'No caption';
+        likes = typeof root.likeCount === 'number' ? root.likeCount.toLocaleString('en-US') : '0';
+        const repliesCount = typeof root.replyCount === 'number'
+          ? root.replyCount
+          : (typeof root.directReplyCount === 'number'
+              ? root.directReplyCount
+              : (Array.isArray(item.comments) ? item.comments.length : (Array.isArray(item.replies) ? item.replies.length : 0)));
+        comments = repliesCount.toLocaleString('en-US');
+        postUrl = root.url || root.postUrl || '';
       } else if (currentPlatform === 'x') {
         const author = item.author || {};
-        username = author.username || 'unknown';
-        avatar = author.avatar || DEFAULT_AVATAR;
+        username = author.userName || author.username || 'unknown';
+        avatar = author.profilePicture || author.avatar || DEFAULT_AVATAR;
         caption = item.text || 'No caption';
         likes = typeof item.likeCount === 'number' ? item.likeCount.toLocaleString('en-US') : '0';
-        comments = typeof item.commentCount === 'number' ? item.commentCount.toLocaleString('en-US') : (typeof item.replyCount === 'number' ? item.replyCount.toLocaleString('en-US') : '0');
+        comments = typeof item.replyCount === 'number' ? item.replyCount.toLocaleString('en-US') : (typeof item.commentCount === 'number' ? item.commentCount.toLocaleString('en-US') : '0');
         postUrl = item.url || '';
       } else {
         const user = item.user || {};
@@ -505,8 +511,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       userDiv.className = 'post-card-user';
       if (currentPlatform === 'tiktok' && item.authorMeta?.nickName && item.authorMeta.nickName !== username) {
         userDiv.textContent = `@${username} (${item.authorMeta.nickName})`;
-      } else if (currentPlatform === 'threads' && item.author?.fullName && item.author.fullName !== username) {
-        userDiv.textContent = `@${username} (${item.author.fullName})`;
+      } else if (currentPlatform === 'threads' && (item.root_post?.fullName || item.root_post?.author?.fullName || item.author?.fullName)) {
+        const fullName = item.root_post?.fullName || item.root_post?.author?.fullName || item.author?.fullName;
+        if (fullName && fullName.toLowerCase() !== username.toLowerCase()) {
+          userDiv.textContent = `@${username} (${fullName})`;
+        } else {
+          userDiv.textContent = `@${username}`;
+        }
       } else if (currentPlatform === 'x' && item.author?.name && item.author.name !== username) {
         userDiv.textContent = `@${username} (${item.author.name})`;
       } else {
@@ -531,10 +542,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       commentSpan.textContent = `💬 ${comments}`;
       metaDiv.appendChild(commentSpan);
 
-      if (currentPlatform === 'threads' && item.repostCount > 0) {
-        const repostSpan = document.createElement('span');
-        repostSpan.textContent = `🔁 ${item.repostCount.toLocaleString('en-US')}`;
-        metaDiv.appendChild(repostSpan);
+      if (currentPlatform === 'tiktok') {
+        if (typeof item.shareCount === 'number' && item.shareCount > 0) {
+          const shareSpan = document.createElement('span');
+          shareSpan.textContent = `🔁 ${item.shareCount.toLocaleString('en-US')}`;
+          metaDiv.appendChild(shareSpan);
+        }
+        if (typeof item.playCount === 'number' && item.playCount > 0) {
+          const playSpan = document.createElement('span');
+          playSpan.textContent = `▶️ ${item.playCount.toLocaleString('en-US')}`;
+          metaDiv.appendChild(playSpan);
+        }
+      } else if (currentPlatform === 'threads') {
+        const root = item.root_post || item;
+        if (root.repostCount > 0) {
+          const repostSpan = document.createElement('span');
+          repostSpan.textContent = `🔁 ${root.repostCount.toLocaleString('en-US')}`;
+          metaDiv.appendChild(repostSpan);
+        }
+        if (root.viewCount > 0) {
+          const viewSpan = document.createElement('span');
+          viewSpan.textContent = `👁️ ${root.viewCount.toLocaleString('en-US')}`;
+          metaDiv.appendChild(viewSpan);
+        }
       } else if (currentPlatform === 'x') {
         if (item.retweetCount > 0) {
           const rtSpan = document.createElement('span');
@@ -545,6 +575,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           const viewSpan = document.createElement('span');
           viewSpan.textContent = `👁️ ${item.viewCount.toLocaleString('en-US')}`;
           metaDiv.appendChild(viewSpan);
+        }
+        if (item.bookmarkCount > 0) {
+          const bmSpan = document.createElement('span');
+          bmSpan.textContent = `🔖 ${item.bookmarkCount.toLocaleString('en-US')}`;
+          metaDiv.appendChild(bmSpan);
         }
       }
 
