@@ -336,9 +336,120 @@
   }
 
   /**
-   * Helper: Locate active post container in DOM (supports modal dialogs, mouse scroll in feeds, search & explore)
+   * Helper: Verify whether a given DOM container strictly belongs to the specified videoId
    */
-  function getActivePostContainer(targetVideoId = null) {
+  function verifyContainerBelongsToId(container, videoId) {
+    if (!container || !videoId) return false;
+    const sId = String(videoId).trim();
+    if (!sId) return false;
+
+    // If container is document.body, it only belongs to videoId if the current URL actually contains videoId
+    if (container === document.body) {
+      const url = window.location.href;
+      return Boolean(
+        url.includes(`/video/${sId}`) ||
+        url.includes(`/photo/${sId}`) ||
+        url.includes(`/v/${sId}`)
+      );
+    }
+
+    // Check if this container or card contains links or inputs with videoId
+    const matchingLink = container.querySelector(
+      `a[href*="/video/${sId}"], a[href*="/photo/${sId}"], input[value*="${sId}"]`
+    );
+    if (matchingLink) return true;
+
+    // Check if container is an active modal dialog and the page URL matches videoId
+    const isModal = typeof container.matches === 'function' && container.matches(
+      '[data-e2e="browse-mode-container"], ' +
+      '[data-e2e="video-detail-container"], ' +
+      '[data-e2e="photo-detail-container"], ' +
+      'div[class*="DivDetailContainer"], ' +
+      'div[class*="DivBrowseModeContainer"], ' +
+      'div[class*="DivModalContainer"], ' +
+      'div[role="dialog"]'
+    );
+
+    if (isModal) {
+      const url = window.location.href;
+      const urlMatches = Boolean(
+        url.includes(`/video/${sId}`) ||
+        url.includes(`/photo/${sId}`) ||
+        url.includes(`/v/${sId}`)
+      );
+      if (urlMatches) {
+        // Ensure the modal does not explicitly link to a different video ID
+        const anyPostLink = container.querySelector('a[href*="/video/"], a[href*="/photo/"]');
+        if (anyPostLink) {
+          const href = anyPostLink.getAttribute('href') || '';
+          const match = href.match(/(?:video|photo)\/(\d+)/i);
+          if (match && match[1] !== sId) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Helper: Search DOM for a container that strictly belongs to the specified videoId
+   */
+  function findContainerForVideoId(videoId) {
+    if (!videoId) return null;
+    const sId = String(videoId).trim();
+    if (!sId) return null;
+
+    // 1. Check open modals first
+    const modals = Array.from(document.querySelectorAll(
+      '[data-e2e="browse-mode-container"], ' +
+      '[data-e2e="video-detail-container"], ' +
+      '[data-e2e="photo-detail-container"], ' +
+      'div[class*="DivDetailContainer"], ' +
+      'div[class*="DivBrowseModeContainer"], ' +
+      'div[class*="DivModalContainer"], ' +
+      'div[role="dialog"]'
+    ));
+
+    for (const m of modals) {
+      if (m.offsetParent !== null || (window.getComputedStyle(m).display !== 'none' && window.getComputedStyle(m).visibility !== 'hidden')) {
+        if (verifyContainerBelongsToId(m, sId)) {
+          return m;
+        }
+      }
+    }
+
+    // 2. Search for any feed card or link containing /video/<id> or /photo/<id>
+    const specificLink = document.querySelector(`a[href*="/video/${sId}"], a[href*="/photo/${sId}"]`);
+    if (specificLink) {
+      const parentCard = specificLink.closest(
+        '[data-e2e="recommend-list-item-container"], ' +
+        '[data-e2e="feed-item"], ' +
+        'div[class*="DivItemContainer"], ' +
+        'div[class*="DivVideoWrapper"], ' +
+        '[data-e2e="search-card-container"], ' +
+        'article, section'
+      );
+      if (parentCard && verifyContainerBelongsToId(parentCard, sId)) {
+        return parentCard;
+      }
+    }
+
+    // 3. If window URL matches this videoId, document.body is the valid container
+    if (window.location.href.includes(`/video/${sId}`) || window.location.href.includes(`/photo/${sId}`) || window.location.href.includes(`/v/${sId}`)) {
+      return document.body;
+    }
+
+    return null;
+  }
+
+  /**
+   * Atomically resolves the current active video ID, username, and DOM container.
+   * Resolves them together to prevent desynchronization after mouse scrolling.
+   */
+  function resolveActivePostAndContainer(providedInfo = null) {
     // 1. Check for open modal / browse-mode dialog FIRST (visible full-screen or popup view)
     const modals = Array.from(document.querySelectorAll(
       '[data-e2e="browse-mode-container"], ' +
@@ -352,26 +463,72 @@
 
     for (const m of modals) {
       if (m.offsetParent !== null || (window.getComputedStyle(m).display !== 'none' && window.getComputedStyle(m).visibility !== 'hidden')) {
-        if (m.querySelector('video, [data-e2e="browse-video-desc"], [data-e2e="photo-desc"], [data-e2e="video-desc"], div[class*="DivPhotoPlayer"], div[class*="DivSlideContainer"], [data-e2e="image-player"], [data-e2e="browse-like-count"]')) {
-          return m;
+        const postLink = m.querySelector('a[href*="/video/"], a[href*="/photo/"]');
+        if (postLink) {
+          const href = postLink.getAttribute('href') || '';
+          const match = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
+          if (match) {
+            return {
+              videoId: match[2],
+              username: match[1] || providedInfo?.username || '',
+              container: m
+            };
+          }
+        }
+        const urlMatch = window.location.href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i) || window.location.href.match(/\/v\/(\d+)/i);
+        if (urlMatch) {
+          const isV = window.location.href.includes('/v/');
+          return {
+            videoId: isV ? urlMatch[1] : (urlMatch[2] || urlMatch[1]),
+            username: isV ? '' : (urlMatch[1] || providedInfo?.username || ''),
+            container: m
+          };
         }
       }
     }
 
-    // 2. Check if there is an actively playing video in feed
-    const playingVideo = Array.from(document.querySelectorAll('video')).find(v => !v.paused && v.duration > 0);
-    if (playingVideo) {
-      const parentCard = playingVideo.closest(
+    // 2. Check direct URL match (when not in modal)
+    const directMatch = window.location.href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i) || window.location.href.match(/\/v\/(\d+)/i);
+    if (directMatch) {
+      const isV = window.location.href.includes('/v/');
+      const vId = isV ? directMatch[1] : (directMatch[2] || directMatch[1]);
+      const uName = isV ? '' : (directMatch[1] || providedInfo?.username || '');
+      const container = findContainerForVideoId(vId) || document.body;
+      return {
+        videoId: vId,
+        username: uName,
+        container
+      };
+    }
+
+    // 3. Check for actively playing video in feed
+    const playingVideos = Array.from(document.querySelectorAll('video')).filter((v) => !v.paused && v.duration > 0);
+    for (const pv of playingVideos) {
+      const card = pv.closest(
         '[data-e2e="recommend-list-item-container"], ' +
         '[data-e2e="feed-item"], ' +
         'div[class*="DivItemContainer"], ' +
         'div[class*="DivVideoWrapper"], ' +
+        '[data-e2e="search-card-container"], ' +
         'article, section'
       );
-      if (parentCard) return parentCard;
+      if (card) {
+        const link = card.querySelector('a[href*="/video/"], a[href*="/photo/"]');
+        if (link) {
+          const href = link.getAttribute('href') || '';
+          const match = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
+          if (match) {
+            return {
+              videoId: match[2],
+              username: match[1] || '',
+              container: card
+            };
+          }
+        }
+      }
     }
 
-    // 3. Viewport proximity check (for mouse scroll navigation in feed, explore, search)
+    // 4. Viewport proximity check (for mouse scroll navigation in feed, explore, search)
     const candidateCards = Array.from(document.querySelectorAll(
       '[data-e2e="recommend-list-item-container"], ' +
       '[data-e2e="feed-item"], ' +
@@ -398,83 +555,87 @@
       }
     }
 
-    if (closestCard) return closestCard;
-
-    // 4. If targetVideoId is specified and no modal/viewport match, find card containing that link
-    if (targetVideoId) {
-      const specificLink = document.querySelector(`a[href*="/video/${targetVideoId}"], a[href*="/photo/${targetVideoId}"]`);
-      if (specificLink) {
-        const parentCard = specificLink.closest(
-          '[data-e2e="recommend-list-item-container"], ' +
-          '[data-e2e="feed-item"], ' +
-          'div[class*="DivItemContainer"], ' +
-          'div[class*="DivVideoWrapper"], ' +
-          '[data-e2e="search-card-container"], ' +
-          'article, section'
-        );
-        if (parentCard) return parentCard;
+    if (closestCard) {
+      const link = closestCard.querySelector('a[href*="/video/"], a[href*="/photo/"]');
+      if (link) {
+        const href = link.getAttribute('href') || '';
+        const match = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
+        if (match) {
+          return {
+            videoId: match[2],
+            username: match[1] || '',
+            container: closestCard
+          };
+        }
       }
     }
 
-    return document.body;
+    // 5. If providedInfo was passed (e.g. from popup) and still exists in DOM
+    if (providedInfo && providedInfo.videoId) {
+      const container = findContainerForVideoId(providedInfo.videoId);
+      if (container) {
+        return {
+          videoId: String(providedInfo.videoId),
+          username: providedInfo.username || '',
+          container
+        };
+      }
+    }
+
+    // 6. Last fallback: any video link in document
+    const anyLink = document.querySelector('a[href*="/video/"], a[href*="/photo/"]');
+    if (anyLink) {
+      const href = anyLink.getAttribute('href') || '';
+      const m = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
+      if (m) {
+        const card = anyLink.closest('article, section, div[class*="DivItemContainer"]') || null;
+        return {
+          videoId: m[2],
+          username: m[1] || '',
+          container: card
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Helper: Locate active post container in DOM (supports modal dialogs, mouse scroll in feeds, search & explore)
+   */
+  function getActivePostContainer(targetVideoId = null) {
+    if (targetVideoId) {
+      return findContainerForVideoId(targetVideoId);
+    }
+    const resolved = resolveActivePostAndContainer();
+    return resolved?.container || null;
   }
 
   /**
    * Helper: Detect TikTok Video ID and Author from URL, active modal, or viewport-centered post
    */
   function getTikTokIdentifier(passedUrl = null) {
-    const candidates = [passedUrl, window.location.href, window.location.pathname, document.URL].filter(Boolean);
-
-    for (const urlStr of candidates) {
-      const match = urlStr.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
+    if (passedUrl) {
+      const match = passedUrl.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i) || passedUrl.match(/\/v\/(\d+)/i);
       if (match) {
+        const isShort = passedUrl.includes('/v/');
+        const videoId = isShort ? match[1] : (match[2] || match[1]);
+        const username = isShort ? '' : (match[1] || '');
         return {
-          videoId: match[2],
-          username: match[1] || '',
-          activeElement: getActivePostContainer(match[2])
-        };
-      }
-
-      // Check /v/<videoId>
-      const matchShort = urlStr.match(/\/v\/(\d+)/i);
-      if (matchShort) {
-        return {
-          videoId: matchShort[1],
-          username: '',
-          activeElement: getActivePostContainer(matchShort[1])
+          videoId,
+          username,
+          activeElement: findContainerForVideoId(videoId)
         };
       }
     }
 
-    // Viewport or active container post detection (handles mouse scroll in feed, search, explore)
-    const activeEl = getActivePostContainer();
-    if (activeEl) {
-      const activeLinks = Array.from(activeEl.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]'));
-      for (const link of activeLinks) {
-        const href = link.getAttribute('href') || '';
-        const m = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
-        if (m) {
-          return {
-            videoId: m[2],
-            username: m[1] || '',
-            activeElement: activeEl
-          };
-        }
-      }
-    }
-
-    // Fallback: search all video/photo links in document
-    const anyLink = document.querySelector('a[href*="/video/"], a[href*="/photo/"]');
-    if (anyLink) {
-      const href = anyLink.getAttribute('href') || '';
-      const m = href.match(/(?:@([\w.-]+)\/)?(?:video|photo)\/(\d+)/i);
-      if (m) {
-        return {
-          videoId: m[2],
-          username: m[1] || '',
-          activeElement: anyLink.closest('article, section, div[class*="DivItemContainer"]') || document.body
-        };
-      }
+    const resolved = resolveActivePostAndContainer();
+    if (resolved) {
+      return {
+        videoId: resolved.videoId,
+        username: resolved.username,
+        activeElement: resolved.container
+      };
     }
 
     return null;
@@ -734,45 +895,66 @@
    * Strategy 5: Extract from DOM & Meta tags (Supports both Video and Photo slides, modal and feed scroll)
    */
   function extractFromTikTokDom(videoId, username, activeContainer = null) {
-    const container = activeContainer || getActivePostContainer(videoId);
+    const container = (activeContainer && verifyContainerBelongsToId(activeContainer, videoId))
+      ? activeContainer
+      : findContainerForVideoId(videoId);
+
+    // If no container belongs to this videoId, strictly do NOT scrape another element's DOM
+    if (!container || !verifyContainerBelongsToId(container, videoId)) {
+      return null;
+    }
 
     const isPhoto = window.location.pathname.includes('/photo/') ||
-                    Boolean(container?.querySelector('div[class*="DivPhotoPlayer"], div[class*="DivSlideContainer"], [data-e2e="image-player"], picture img'));
+                    Boolean(container.querySelector('div[class*="DivPhotoPlayer"], div[class*="DivSlideContainer"], [data-e2e="image-player"], picture img'));
 
-    const isModalOrBody = !container || container === document.body || (typeof container.matches === 'function' && container.matches('[data-e2e*="container"], [class*="Container"], [role="dialog"]'));
+    const isModal = typeof container.matches === 'function' && container.matches(
+      '[data-e2e="browse-mode-container"], ' +
+      '[data-e2e="video-detail-container"], ' +
+      '[data-e2e="photo-detail-container"], ' +
+      'div[class*="DivDetailContainer"], ' +
+      'div[class*="DivBrowseModeContainer"], ' +
+      'div[class*="DivModalContainer"], ' +
+      'div[role="dialog"]'
+    );
+    const isDirectPage = container === document.body && (
+      window.location.href.includes(`/video/${videoId}`) ||
+      window.location.href.includes(`/photo/${videoId}`) ||
+      window.location.href.includes(`/v/${videoId}`)
+    );
+    const allowGlobalFallback = isModal || isDirectPage;
 
     const descCandidates = [
-      container?.querySelector('[data-e2e="browse-video-desc"]'),
-      container?.querySelector('[data-e2e="photo-desc"]'),
-      container?.querySelector('[data-e2e="video-desc"]'),
-      container?.querySelector('h1[data-e2e="browse-video-desc"]'),
-      container?.querySelector('div[class*="DivDescriptionContentWrapper"]'),
-      container?.querySelector('div[class*="DivTextWrapper"]'),
-      container?.querySelector('div[class*="DivDescription"]'),
-      isModalOrBody ? document.querySelector('[data-e2e="browse-video-desc"]') : null,
-      isModalOrBody ? document.querySelector('[data-e2e="photo-desc"]') : null,
-      isModalOrBody ? document.querySelector('[data-e2e="video-desc"]') : null
+      container.querySelector('[data-e2e="browse-video-desc"]'),
+      container.querySelector('[data-e2e="photo-desc"]'),
+      container.querySelector('[data-e2e="video-desc"]'),
+      container.querySelector('h1[data-e2e="browse-video-desc"]'),
+      container.querySelector('div[class*="DivDescriptionContentWrapper"]'),
+      container.querySelector('div[class*="DivTextWrapper"]'),
+      container.querySelector('div[class*="DivDescription"]'),
+      allowGlobalFallback ? document.querySelector('[data-e2e="browse-video-desc"]') : null,
+      allowGlobalFallback ? document.querySelector('[data-e2e="photo-desc"]') : null,
+      allowGlobalFallback ? document.querySelector('[data-e2e="video-desc"]') : null
     ].filter(Boolean);
 
     let text = descCandidates[0] ? getCleanCaptionText(descCandidates[0]) : '';
 
     const authorEl = container.querySelector('[data-e2e="browse-username"], [data-e2e="video-author-uniqueid"], [data-e2e="user-title"], a[href*="/@"]') ||
-                     document.querySelector('[data-e2e="browse-username"], [data-e2e="video-author-uniqueid"], [data-e2e="user-title"]');
+                     (allowGlobalFallback ? document.querySelector('[data-e2e="browse-username"], [data-e2e="video-author-uniqueid"], [data-e2e="user-title"]') : null);
     const hrefMatch = authorEl?.getAttribute('href')?.match(/@([^/?#]+)/);
     const resolvedUsername = hrefMatch ? hrefMatch[1] : (authorEl ? authorEl.textContent.trim().replace(/^@/, '') : (username || ''));
 
     const nicknameEl = container.querySelector('[data-e2e="browse-user-nickname"], [data-e2e="user-subtitle"]') ||
-                       document.querySelector('[data-e2e="browse-user-nickname"]');
+                       (allowGlobalFallback ? document.querySelector('[data-e2e="browse-user-nickname"]') : null);
     const resolvedNickname = nicknameEl ? nicknameEl.textContent.trim() : resolvedUsername;
 
     const avatarEl = container.querySelector('[data-e2e="browse-user-avatar"] img, [data-e2e="user-avatar"] img, img[class*="ImgAvatar"]') ||
-                     document.querySelector('[data-e2e="browse-user-avatar"] img, [data-e2e="user-avatar"] img');
+                     (allowGlobalFallback ? document.querySelector('[data-e2e="browse-user-avatar"] img, [data-e2e="user-avatar"] img') : null);
     const avatarUrl = avatarEl ? avatarEl.src : '';
 
-    const domVideo = container.querySelector('video') || document.querySelector('video');
+    const domVideo = container.querySelector('video') || (allowGlobalFallback ? document.querySelector('video') : null);
     const domPoster = domVideo?.getAttribute('poster') ||
                       container.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src ||
-                      document.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src || '';
+                      (allowGlobalFallback ? document.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src : '') || '';
 
     // Collect photo slide images if present
     const domImages = [];
@@ -787,13 +969,13 @@
     }
 
     const likeEl = container.querySelector('[data-e2e="like-count"], [data-e2e="browse-like-count"], strong[data-e2e="like-count"], [data-e2e="visual-like-count"]') ||
-                   (isModalOrBody ? document.querySelector('[data-e2e="browse-like-count"]') : null);
+                   (allowGlobalFallback ? document.querySelector('[data-e2e="browse-like-count"]') : null);
     const commentEl = container.querySelector('[data-e2e="comment-count"], [data-e2e="browse-comment-count"], strong[data-e2e="comment-count"]') ||
-                      (isModalOrBody ? document.querySelector('[data-e2e="browse-comment-count"]') : null);
+                      (allowGlobalFallback ? document.querySelector('[data-e2e="browse-comment-count"]') : null);
     const shareEl = container.querySelector('[data-e2e="share-count"], [data-e2e="browse-share-count"], strong[data-e2e="share-count"]') ||
-                    (isModalOrBody ? document.querySelector('[data-e2e="browse-share-count"]') : null);
+                    (allowGlobalFallback ? document.querySelector('[data-e2e="browse-share-count"]') : null);
     const collectEl = container.querySelector('[data-e2e="bookmark-count"], [data-e2e="browse-bookmark-count"], [data-e2e="collect-count"], [data-e2e="undefined-count"], strong[data-e2e="bookmark-count"]') ||
-                      (isModalOrBody ? document.querySelector('[data-e2e="browse-bookmark-count"], [data-e2e="collect-count"]') : null);
+                      (allowGlobalFallback ? document.querySelector('[data-e2e="browse-bookmark-count"], [data-e2e="collect-count"]') : null);
 
     // Author stats from cached stats or profile header DOM
     const lowerUser = resolvedUsername.toLowerCase();
@@ -967,22 +1149,40 @@
    */
   function normalizeToTikTokSchema(item, commentsList, videoId, username, activeContainer = null) {
     const id = String(item.id || videoId || '');
-    const container = activeContainer || getActivePostContainer(id);
-    const isModalOrBody = !container || container === document.body || (typeof container.matches === 'function' && container.matches('[data-e2e*="container"], [class*="Container"], [role="dialog"]'));
+    const container = (activeContainer && verifyContainerBelongsToId(activeContainer, id))
+      ? activeContainer
+      : (findContainerForVideoId(id) || null);
+    const hasVerifiedContainer = Boolean(container && verifyContainerBelongsToId(container, id));
+
+    const isModal = hasVerifiedContainer && typeof container.matches === 'function' && container.matches(
+      '[data-e2e="browse-mode-container"], ' +
+      '[data-e2e="video-detail-container"], ' +
+      '[data-e2e="photo-detail-container"], ' +
+      'div[class*="DivDetailContainer"], ' +
+      'div[class*="DivBrowseModeContainer"], ' +
+      'div[class*="DivModalContainer"], ' +
+      'div[role="dialog"]'
+    );
+    const isDirectPage = hasVerifiedContainer && container === document.body && (
+      window.location.href.includes(`/video/${id}`) ||
+      window.location.href.includes(`/photo/${id}`) ||
+      window.location.href.includes(`/v/${id}`)
+    );
+    const allowGlobalFallback = isModal || isDirectPage;
 
     let text = String(item.desc || item.text || '');
-    if (!text || text === 'Just watched' || text === 'Baru saja ditonton') {
+    if ((!text || text === 'Just watched' || text === 'Baru saja ditonton') && hasVerifiedContainer) {
       const descCandidates = [
-        container?.querySelector('[data-e2e="browse-video-desc"]'),
-        container?.querySelector('[data-e2e="photo-desc"]'),
-        container?.querySelector('[data-e2e="video-desc"]'),
-        container?.querySelector('h1[data-e2e="browse-video-desc"]'),
-        container?.querySelector('div[class*="DivDescriptionContentWrapper"]'),
-        container?.querySelector('div[class*="DivTextWrapper"]'),
-        container?.querySelector('div[class*="DivDescription"]'),
-        isModalOrBody ? document.querySelector('[data-e2e="browse-video-desc"]') : null,
-        isModalOrBody ? document.querySelector('[data-e2e="photo-desc"]') : null,
-        isModalOrBody ? document.querySelector('[data-e2e="video-desc"]') : null
+        container.querySelector('[data-e2e="browse-video-desc"]'),
+        container.querySelector('[data-e2e="photo-desc"]'),
+        container.querySelector('[data-e2e="video-desc"]'),
+        container.querySelector('h1[data-e2e="browse-video-desc"]'),
+        container.querySelector('div[class*="DivDescriptionContentWrapper"]'),
+        container.querySelector('div[class*="DivTextWrapper"]'),
+        container.querySelector('div[class*="DivDescription"]'),
+        allowGlobalFallback ? document.querySelector('[data-e2e="browse-video-desc"]') : null,
+        allowGlobalFallback ? document.querySelector('[data-e2e="photo-desc"]') : null,
+        allowGlobalFallback ? document.querySelector('[data-e2e="video-desc"]') : null
       ].filter(Boolean);
 
       if (descCandidates.length > 0) {
@@ -1037,11 +1237,15 @@
     const heart = [authorStats.heartCount, authorStats.heart, authorStatsV2.heartCount, userFallback.heartCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
     const video = [authorStats.videoCount, authorStats.video, authorStatsV2.videoCount, userFallback.videoCount].map(parseAccurateNumber).find((value) => value > 0) || 0;
 
-    // Inspect DOM video as fallback/supplement (scoped to active card/modal)
-    const domVideo = container ? container.querySelector('video') : document.querySelector('video');
-    const domPoster = domVideo?.getAttribute('poster') ||
-                      container?.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src ||
-                      document.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src || '';
+    // Inspect DOM video as fallback/supplement (strictly scoped to verified container)
+    const domVideo = hasVerifiedContainer
+      ? (container.querySelector('video') || (allowGlobalFallback ? document.querySelector('video') : null))
+      : null;
+    const domPoster = hasVerifiedContainer
+      ? (domVideo?.getAttribute('poster') ||
+         container.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src ||
+         (allowGlobalFallback ? document.querySelector('img[class*="ImgPoster"], [data-e2e="video-cover"] img')?.src : '') || '')
+      : '';
 
     // Image post extraction (for TikTok photo carousels/slides)
     const imagePost = item.imagePost || item.image_post;
@@ -1099,14 +1303,22 @@
       return apiVal;
     }
 
-    const domLike = container?.querySelector('[data-e2e="like-count"], [data-e2e="browse-like-count"], strong[data-e2e="like-count"], [data-e2e="visual-like-count"]') ||
-                    (isModalOrBody ? document.querySelector('[data-e2e="browse-like-count"]') : null);
-    const domShare = container?.querySelector('[data-e2e="share-count"], [data-e2e="browse-share-count"], strong[data-e2e="share-count"]') ||
-                     (isModalOrBody ? document.querySelector('[data-e2e="browse-share-count"]') : null);
-    const domComment = container?.querySelector('[data-e2e="comment-count"], [data-e2e="browse-comment-count"], strong[data-e2e="comment-count"]') ||
-                       (isModalOrBody ? document.querySelector('[data-e2e="browse-comment-count"]') : null);
-    const domCollect = container?.querySelector('[data-e2e="bookmark-count"], [data-e2e="browse-bookmark-count"], [data-e2e="collect-count"], [data-e2e="undefined-count"], strong[data-e2e="bookmark-count"]') ||
-                       (isModalOrBody ? document.querySelector('[data-e2e="browse-bookmark-count"], [data-e2e="collect-count"]') : null);
+    const domLike = hasVerifiedContainer
+      ? (container.querySelector('[data-e2e="like-count"], [data-e2e="browse-like-count"], strong[data-e2e="like-count"], [data-e2e="visual-like-count"]') ||
+         (allowGlobalFallback ? document.querySelector('[data-e2e="browse-like-count"]') : null))
+      : null;
+    const domShare = hasVerifiedContainer
+      ? (container.querySelector('[data-e2e="share-count"], [data-e2e="browse-share-count"], strong[data-e2e="share-count"]') ||
+         (allowGlobalFallback ? document.querySelector('[data-e2e="browse-share-count"]') : null))
+      : null;
+    const domComment = hasVerifiedContainer
+      ? (container.querySelector('[data-e2e="comment-count"], [data-e2e="browse-comment-count"], strong[data-e2e="comment-count"]') ||
+         (allowGlobalFallback ? document.querySelector('[data-e2e="browse-comment-count"]') : null))
+      : null;
+    const domCollect = hasVerifiedContainer
+      ? (container.querySelector('[data-e2e="bookmark-count"], [data-e2e="browse-bookmark-count"], [data-e2e="collect-count"], [data-e2e="undefined-count"], strong[data-e2e="bookmark-count"]') ||
+         (allowGlobalFallback ? document.querySelector('[data-e2e="browse-bookmark-count"], [data-e2e="collect-count"]') : null))
+      : null;
 
     const diggCount = resolveMetric(stats.diggCount, stats.digg_count, domLike);
     const shareCount = resolveMetric(stats.shareCount, stats.share_count, domShare);
@@ -1164,8 +1376,8 @@
       }
     }
 
-    // 3. Fallback for photo slides from DOM if still empty
-    if (isPhotoPost && mediaUrlSet.size === 0) {
+    // 3. Fallback for photo slides from DOM if still empty (strictly scoped to verified container)
+    if (isPhotoPost && mediaUrlSet.size === 0 && hasVerifiedContainer) {
       const domImages = container.querySelectorAll('div[class*="DivPhotoPlayer"] img, div[class*="DivSlideContainer"] img, [data-e2e="image-player"] img, div[class*="DivImageWrapper"] img, picture img');
       for (const img of domImages) {
         const src = img.src || img.getAttribute('data-src') || '';
@@ -1266,7 +1478,8 @@
 
     populateUserStatsFromUniversalData();
 
-    const target = providedInfo || getTikTokIdentifier();
+    // Atomically resolve current post ID, username, and container together at extraction time
+    const target = resolveActivePostAndContainer(providedInfo);
     if (!target || !target.videoId) {
       showToast({
         title: 'Not a TikTok Video',
@@ -1276,8 +1489,10 @@
       return { success: false, error: 'Not a TikTok video page.' };
     }
 
-    // Ensure activeElement is resolved if not passed across chrome messages
-    const activeEl = target.activeElement || getActivePostContainer(target.videoId);
+    // Ensure activeElement strictly belongs to target.videoId
+    const activeEl = (target.container && verifyContainerBelongsToId(target.container, target.videoId))
+      ? target.container
+      : findContainerForVideoId(target.videoId);
 
     isExtracting = true;
     showToast({
@@ -1381,15 +1596,14 @@
    */
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'extract_current_tiktok' || request.action === 'extract_current_post') {
-      const target = request.postInfo || getTikTokIdentifier(request.tabUrl);
-      triggerTikTokExtraction(target).then((res) => {
+      triggerTikTokExtraction(request.postInfo).then((res) => {
         sendResponse(res || { success: true });
       }).catch((err) => {
         sendResponse({ success: false, error: err.message });
       });
       return true;
     } else if (request.action === 'check_status') {
-      const target = getTikTokIdentifier(request.tabUrl);
+      const target = resolveActivePostAndContainer();
       sendResponse({
         isPostPage: Boolean(target && target.videoId),
         platform: 'tiktok',
