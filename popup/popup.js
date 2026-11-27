@@ -553,6 +553,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           playSpan.textContent = `▶️ ${item.playCount.toLocaleString('en-US')}`;
           metaDiv.appendChild(playSpan);
         }
+        if (item.locationMeta?.locationName) {
+          const locSpan = document.createElement('span');
+          locSpan.textContent = `📍 ${item.locationMeta.locationName}${item.locationMeta.city ? ` (${item.locationMeta.city})` : ''}`;
+          metaDiv.appendChild(locSpan);
+        }
       } else if (currentPlatform === 'threads') {
         const root = item.root_post || item;
         if (root.repostCount > 0) {

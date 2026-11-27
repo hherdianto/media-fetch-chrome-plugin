@@ -981,11 +981,15 @@
     const lowerUser = resolvedUsername.toLowerCase();
     const userStats = cachedUserStats.get(lowerUser) || getProfileDomUserStats(resolvedUsername) || {};
 
+    // Extract POI / Location from DOM if present
+    const domPoi = extractPoiFromDom(container, allowGlobalFallback);
+
     return {
       id: videoId || '',
       desc: text,
       createTime: Math.floor(Date.now() / 1000),
       isPhoto,
+      poi: domPoi,
       author: {
         id: '',
         uniqueId: resolvedUsername,
@@ -1142,6 +1146,90 @@
       console.warn('[TikTok Extractor] DOM comment extraction error:', e);
     }
     return comments;
+  }
+
+  /**
+   * Helper: Extract POI / Location metadata from DOM as fallback
+   */
+  function extractPoiFromDom(container, allowGlobalFallback = false) {
+    if (!container && !allowGlobalFallback) return null;
+    const poiEl = (container ? container.querySelector(
+      'a[href*="/poi/"], a[href*="/place/"], [data-e2e*="poi"], div[class*="Poi"] a, a[class*="Poi"], div[class*="DivPoiContainer"], a[class*="StyledPoiLink"]'
+    ) : null) || (allowGlobalFallback ? document.querySelector(
+      'a[href*="/poi/"], a[href*="/place/"], [data-e2e*="poi"], div[class*="Poi"] a, a[class*="Poi"], div[class*="DivPoiContainer"], a[class*="StyledPoiLink"]'
+    ) : null);
+
+    if (!poiEl) return null;
+
+    const targetAnchor = (poiEl.tagName && poiEl.tagName.toLowerCase() === 'a')
+      ? poiEl
+      : (poiEl.querySelector('a') || poiEl);
+    const href = targetAnchor.getAttribute('href') || '';
+    const idMatch = href.match(/\/poi\/(\d+)/i) || href.match(/(?:id|poi_id)=(\d+)/i);
+    const poiId = idMatch ? idMatch[1] : '';
+    const rawText = poiEl.textContent.trim();
+    const parts = rawText.split(/[·•]/).map((s) => s.trim()).filter(Boolean);
+    const locationName = parts[0] || rawText;
+    const city = parts[1] || '';
+
+    if (!locationName) return null;
+
+    return {
+      name: locationName,
+      id: poiId,
+      address: '',
+      city,
+      province: '',
+      country: '',
+      countryCode: '',
+      fatherPoiId: '',
+      fatherPoiName: city,
+      type: 0,
+      category: '',
+      cityCode: '',
+      ttTypeCode: '',
+      typeCode: '',
+      ttTypeNameTiny: '',
+      ttTypeNameMedium: '',
+      ttTypeNameSuper: ''
+    };
+  }
+
+  /**
+   * Helper: Parse TikTok POI / Location metadata into normalized locationMeta schema
+   */
+  function parseTikTokLocationMeta(rawPoi) {
+    if (!rawPoi || typeof rawPoi !== 'object') return null;
+
+    const locationName = String(rawPoi.name || rawPoi.locationName || rawPoi.poiName || rawPoi.title || '').trim();
+    const locationId = String(rawPoi.id || rawPoi.locationId || rawPoi.poiId || '').trim();
+    const address = String(rawPoi.address || '').trim();
+    const city = String(rawPoi.city || '').trim();
+
+    // If there is no locationName, locationId, address, or city, consider locationMeta absent
+    if (!locationName && !locationId && !address && !city) {
+      return null;
+    }
+
+    return {
+      locationName,
+      locationId,
+      address,
+      city,
+      province: String(rawPoi.province || '').trim(),
+      country: String(rawPoi.country || '').trim(),
+      countryCode: String(rawPoi.countryCode || rawPoi.country_code || '').trim(),
+      fatherPoiId: String(rawPoi.fatherPoiId || rawPoi.father_poi_id || '').trim(),
+      fatherPoiName: String(rawPoi.fatherPoiName || rawPoi.father_poi_name || '').trim(),
+      type: Number.isFinite(rawPoi.type) ? rawPoi.type : (parseInt(rawPoi.type, 10) || 0),
+      category: String(rawPoi.category || '').trim(),
+      cityCode: String(rawPoi.cityCode || rawPoi.city_code || '').trim(),
+      ttTypeCode: String(rawPoi.ttTypeCode || rawPoi.tt_type_code || '').trim(),
+      typeCode: String(rawPoi.typeCode || rawPoi.type_code || '').trim(),
+      ttTypeNameTiny: String(rawPoi.ttTypeNameTiny || rawPoi.tt_type_name_tiny || '').trim(),
+      ttTypeNameMedium: String(rawPoi.ttTypeNameMedium || rawPoi.tt_type_name_medium || '').trim(),
+      ttTypeNameSuper: String(rawPoi.ttTypeNameSuper || rawPoi.tt_type_name_super || '').trim()
+    };
   }
 
   /**
@@ -1440,6 +1528,15 @@
 
     const isAd = Boolean(item.isAd || item.is_ad);
 
+    // POI / Location Meta extraction
+    let rawPoi = item.poi || item.poiInfo || item.poi_info || item.locationMeta || item.location || null;
+
+    if (!rawPoi && hasVerifiedContainer) {
+      rawPoi = extractPoiFromDom(container, allowGlobalFallback);
+    }
+
+    const locationMeta = parseTikTokLocationMeta(rawPoi);
+
     // Exact Schema requested:
     return {
       id,
@@ -1469,7 +1566,8 @@
       mediaUrls,
       covers,
       hashtags,
-      isAd
+      isAd,
+      locationMeta
     };
   }
 
@@ -1564,12 +1662,13 @@
 
             if (response && response.success) {
               const isUpdated = response.isUpdate;
+              const locBadge = normalizedData.locationMeta?.locationName ? ` • 📍 ${normalizedData.locationMeta.locationName}` : '';
               showToast({
                 title: isUpdated ? 'TikTok Data Updated!' : 'TikTok Video Saved!',
                 message: `Video by @${normalizedData.authorMeta?.name || 'unknown'} saved to database. Click 'Download tiktok.json' in popup to export.`,
                 type: 'success',
                 badge: `Total: ${response.totalCount} videos`,
-                meta: `❤️ ${normalizedData.diggCount.toLocaleString('en-US')} • 💬 ${normalizedData.commentCount.toLocaleString('en-US')} (${(normalizedData.commentsDetail?.length || 0).toLocaleString('en-US')} comments) • 🔁 ${normalizedData.shareCount.toLocaleString('en-US')}`
+                meta: `❤️ ${normalizedData.diggCount.toLocaleString('en-US')} • 💬 ${normalizedData.commentCount.toLocaleString('en-US')} (${(normalizedData.commentsDetail?.length || 0).toLocaleString('en-US')} comments) • 🔁 ${normalizedData.shareCount.toLocaleString('en-US')}${locBadge}`
               });
               resolve({ success: true, post: normalizedData, totalCount: response.totalCount });
             } else {

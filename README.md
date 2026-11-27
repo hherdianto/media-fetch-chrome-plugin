@@ -123,6 +123,75 @@ Each item saved contains rich metadata structured for downstream processing:
 }
 ```
 
+### TikTok JSON Schema (`tiktok.json`)
+
+Saved to `tiktok.json` as an array of TikTok video objects, including author statistics, metrics, comments, and location/POI metadata:
+
+```json
+[
+  {
+    "id": "7693353966364642578",
+    "text": "Jangan lewatkan! Promo tiket resmi Jatim Park 1 terbaru...",
+    "createTime": 1795768420,
+    "createTimeISO": "2026-11-27T08:33:40+00:00",
+    "authorMeta": {
+      "id": "7123456789",
+      "name": "infopromotiket",
+      "nickName": "Promo tiket wisata",
+      "verified": false,
+      "signature": "Info promo tiket tempat wisata resmi & hemat!",
+      "avatar": "https://p16-sign-va.tiktokcdn.com/...",
+      "fans": 15400,
+      "following": 12,
+      "heart": 85000,
+      "video": 120
+    },
+    "videoMeta": {
+      "height": 1024,
+      "width": 576,
+      "duration": 31200,
+      "coverUrl": "https://...",
+      "originalCoverUrl": "https://...",
+      "definition": "540p",
+      "format": "mp4"
+    },
+    "diggCount": 1420,
+    "shareCount": 85,
+    "playCount": 24500,
+    "commentCount": 35,
+    "commentsDetail": [],
+    "collectCount": 310,
+    "webVideoUrl": "https://www.tiktok.com/@infopromotiket/video/7693353966364642578",
+    "mediaUrls": ["https://..."],
+    "covers": {
+      "default": "https://...",
+      "dynamic": "https://..."
+    },
+    "hashtags": [],
+    "isAd": false,
+    "locationMeta": {
+      "locationName": "Jawa Timur Park 1",
+      "locationId": "22535865209853468",
+      "address": "Jl. Dewi Sartika Atas No.2, Sisir, Kec. Batu, Batu City, East Java 65314, Indonesia",
+      "city": "Batu",
+      "province": "",
+      "country": "",
+      "countryCode": "1643084",
+      "fatherPoiId": "",
+      "fatherPoiName": "Batu",
+      "type": 0,
+      "category": "Outdoors and Attractions",
+      "cityCode": "1649824",
+      "ttTypeCode": "08a7a7",
+      "typeCode": "",
+      "ttTypeNameTiny": "Theme Park",
+      "ttTypeNameMedium": "Attraction",
+      "ttTypeNameSuper": "Outdoors and Attractions"
+    }
+  }
+]
+```
+
 ### Threads JSON Schema (`threads.json`)
 
 Saved to `threads.json` as an array of thread objects containing `root_post` and nested `comments`:
