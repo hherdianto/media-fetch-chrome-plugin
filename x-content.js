@@ -286,6 +286,46 @@
   }
 
   /**
+   * Helper: Retrieve the handle of the currently mounted profile header (if any).
+   * Ensures page-level profile fields (bio, location, banner) are never attributed to a different author.
+   */
+  function getMountedProfileHeaderHandle() {
+    // 1. Look for profile header UserName within primaryColumn (outside of articles)
+    const primaryCol = document.querySelector('[data-testid="primaryColumn"]');
+    if (primaryCol) {
+      const userNames = Array.from(primaryCol.querySelectorAll('[data-testid="UserName"]'));
+      for (const un of userNames) {
+        if (!un.closest('article')) {
+          const text = un.innerText || '';
+          const match = text.match(/@([A-Za-z0-9_]+)/);
+          if (match) {
+            return match[1];
+          }
+          const profileLink = un.querySelector('a[href^="/"]');
+          if (profileLink) {
+            const href = (profileLink.getAttribute('href') || '').replace(/^\//, '').split(/[/?#]/)[0];
+            if (href && !['home', 'explore', 'notifications', 'messages', 'search', 'settings', 'i'].includes(href.toLowerCase())) {
+              return href;
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Check if the page URL represents a profile page
+    const pathname = window.location.pathname;
+    const profileMatch = pathname.match(/^\/([A-Za-z0-9_]+)(?:\/(?:with_replies|highlights|articles|media|likes))?$/i);
+    if (profileMatch) {
+      const u = profileMatch[1];
+      if (!['home', 'explore', 'notifications', 'messages', 'search', 'settings', 'i'].includes(u.toLowerCase())) {
+        return u;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Extract author information (displayName, handle, isVerified, isBlueVerified, avatarUrl, coverPicture, etc.)
    */
   function extractAuthorInfo(articleEl, targetUsername) {
@@ -382,15 +422,29 @@
     if (!handle && targetUsername) handle = targetUsername;
     if (!displayName) displayName = handle || targetUsername || 'X User';
 
-    // Optional page-level details if on profile page
-    const bannerImg = document.querySelector('img[src*="profile_banners"]');
-    if (bannerImg) coverPicture = bannerImg.src || bannerImg.getAttribute('src') || '';
+    // Optional page-level details only after verifying that the header's handle matches the article's resolved handle
+    const headerHandle = getMountedProfileHeaderHandle();
+    const isHeaderForThisAuthor = Boolean(
+      handle &&
+      headerHandle &&
+      headerHandle.toLowerCase() === handle.toLowerCase()
+    );
 
-    const bioEl = document.querySelector('[data-testid="UserDescription"]');
-    if (bioEl) description = bioEl.innerText?.trim() || '';
+    if (isHeaderForThisAuthor) {
+      const primaryCol = document.querySelector('[data-testid="primaryColumn"]') || document;
+      const headerContainer = primaryCol.querySelector('[data-testid="UserProfileHeader_Items"]')?.parentElement ||
+                              primaryCol.querySelector('[data-testid="UserDescription"]')?.parentElement?.parentElement ||
+                              primaryCol;
 
-    const locEl = document.querySelector('[data-testid="UserLocation"]');
-    if (locEl) location = locEl.innerText?.trim() || '';
+      const bannerImg = headerContainer.querySelector('img[src*="profile_banners"]') || document.querySelector('img[src*="profile_banners"]');
+      if (bannerImg) coverPicture = bannerImg.src || bannerImg.getAttribute('src') || '';
+
+      const bioEl = headerContainer.querySelector('[data-testid="UserDescription"]');
+      if (bioEl) description = bioEl.innerText?.trim() || '';
+
+      const locEl = headerContainer.querySelector('[data-testid="UserLocation"]');
+      if (locEl) location = locEl.innerText?.trim() || '';
+    }
 
     return {
       displayName,
