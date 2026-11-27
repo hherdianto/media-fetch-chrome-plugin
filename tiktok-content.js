@@ -996,7 +996,14 @@
     const author = (typeof item.author === 'object' && item.author !== null) ? item.author : {};
     const authorStats = item.authorStats || {};
     const authorStatsV2 = item.authorStatsV2 || {};
-    const stats = item.stats || item.statsV2 || {};
+    const stats = {};
+    for (const key of ['diggCount', 'shareCount', 'playCount', 'commentCount', 'collectCount']) {
+      const snakeKey = key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+      stats[key] = [
+        item.stats?.[key], item.stats?.[snakeKey],
+        item.statsV2?.[key], item.statsV2?.[snakeKey]
+      ].map(parseAccurateNumber).find((value) => value > 0) || 0;
+    }
     const videoObj = item.video || {};
 
     const getMediaUrlString = (val) => {
