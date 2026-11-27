@@ -123,6 +123,186 @@ Each item saved contains rich metadata structured for downstream processing:
 }
 ```
 
+### Threads JSON Schema (`threads.json`)
+
+Saved to `threads.json` as an array of thread objects containing `root_post` and nested `comments`:
+
+```json
+[
+  {
+    "root_post": {
+      "id": "4029356199806832361",
+      "userId": "63454878412",
+      "username": "jadijago",
+      "profilePicUrl": "https://instagram.fcgk22-1.fna.fbcdn.net/v/t51.82787-19/721387568_17969551182118413_1501567005155862888_n.jpg",
+      "isVerified": true,
+      "shortcode": "DfrJh2DAQ7p",
+      "takenAt": 1794556711,
+      "text": "Para hadirin yang staying hard to survive until payday….",
+      "likeCount": 6,
+      "replyCount": 25,
+      "quoteCount": 0,
+      "repostCount": 0,
+      "viewCount": 1700,
+      "url": "https://www.threads.net/@jadijago/post/DfrJh2DAQ7p",
+      "is_reply": false,
+      "reply_to_username": null,
+      "reply_to_user_id": null,
+      "reply_to_post_id": null
+    },
+    "comments": [
+      {
+        "id": "4030791214409174096",
+        "userId": "18013286403003729",
+        "username": "wahidbinsaad",
+        "profilePicUrl": "https://instagram.fcgk22-1.fna.fbcdn.net/...",
+        "isVerified": false,
+        "takenAt": 1794727780,
+        "text": "Min knp saya ga bisa bayar listrik ya?",
+        "likeCount": 0,
+        "replyCount": 1,
+        "url": "https://www.threads.net/@wahidbinsaad/post/Dfw6-x-kyRQ",
+        "is_reply": true,
+        "reply_to_username": "jadijago",
+        "reply_to_user_id": "63454878412",
+        "reply_to_post_id": "4029356199806832361"
+      }
+    ]
+  }
+]
+```
+
+### X / Twitter JSON Schema (`x.json`)
+
+Saved to `x.json` as a standardized array of tweet objects:
+
+```json
+[
+  {
+    "type": "tweet",
+    "id": "2116012214398365813",
+    "url": "https://x.com/cnbcindonesia/status/2116012214398365813",
+    "twitterUrl": "https://twitter.com/cnbcindonesia/status/2116012214398365813",
+    "text": "Kuartal III-2026, Laba Bank Raya Rp21 Miliar, Kredit Digital Naik 20%\nhttps://t.co/ClEzriw7Jw",
+    "source": "",
+    "retweetCount": 0,
+    "replyCount": 0,
+    "likeCount": 0,
+    "quoteCount": 0,
+    "viewCount": 473,
+    "createdAt": "Fri Oct 30 03:40:00 +0000 2026",
+    "lang": "in",
+    "bookmarkCount": 0,
+    "isReply": false,
+    "inReplyToId": null,
+    "conversationId": "2116012214398365813",
+    "inReplyToUserId": null,
+    "inReplyToUsername": null,
+    "isPinned": false,
+    "author": {
+      "type": "user",
+      "userName": "cnbcindonesia",
+      "url": "https://x.com/cnbcindonesia",
+      "twitterUrl": "https://twitter.com/cnbcindonesia",
+      "id": "847372542830444544",
+      "name": "CNBC Indonesia",
+      "isVerified": false,
+      "isBlueVerified": true,
+      "profilePicture": "https://pbs.twimg.com/profile_images/2021059983459414016/xcoUw9RD_normal.jpg",
+      "coverPicture": "https://pbs.twimg.com/profile_banners/847372542830444544/1770707437",
+      "description": "Terus ikuti berita ekonomi bisnis dan analisis mendalam hanya di https://t.co/UuwC63DqA1  FB, IG, Tiktok: CNBC Indonesia",
+      "location": "Jakarta Capital Region",
+      "followers": 239831,
+      "following": 29,
+      "status": "",
+      "canDm": false,
+      "canMediaTag": false,
+      "createdAt": "Thu Mar 30 08:58:52 +0000 2017",
+      "entities": {
+        "description": {
+          "urls": [
+            {
+              "display_url": "cnbcindonesia.com",
+              "expanded_url": "http://cnbcindonesia.com",
+              "indices": [65, 88],
+              "url": "https://t.co/UuwC63DqA1"
+            }
+          ]
+        },
+        "url": {
+          "urls": [
+            {
+              "display_url": "t.me/CNBCIndonesiaO…",
+              "expanded_url": "https://t.me/CNBCIndonesiaOfficial",
+              "indices": [0, 23],
+              "url": "https://t.co/EJhaeLOysA"
+            }
+          ]
+        }
+      },
+      "fastFollowersCount": 0,
+      "favouritesCount": 139,
+      "hasCustomTimelines": true,
+      "isTranslator": false,
+      "mediaCount": 11268,
+      "statusesCount": 523591,
+      "withheldInCountries": [],
+      "affiliatesHighlightedLabel": {},
+      "possiblySensitive": false,
+      "pinnedTweetIds": [],
+      "profile_bio": {},
+      "isAutomated": false,
+      "automatedBy": null
+    },
+    "extendedEntities": {},
+    "card": {
+      "binding_values": [
+        {
+          "key": "title",
+          "value": {
+            "string_value": "Kuartal III-2026, Laba Bank Raya Rp21 Miliar, Kredit Digital Naik 20%",
+            "type": "STRING"
+          }
+        },
+        {
+          "key": "card_url",
+          "value": {
+            "scribe_key": "card_url",
+            "string_value": "https://t.co/ClEzriw7Jw",
+            "type": "STRING"
+          }
+        }
+      ],
+      "card_platform": {
+        "platform": {
+          "audience": { "name": "production" },
+          "device": { "name": "Swift", "version": "12" }
+        }
+      },
+      "name": "summary_large_image",
+      "url": "https://t.co/ClEzriw7Jw",
+      "user_refs_results": []
+    },
+    "place": {},
+    "entities": {
+      "urls": [
+        {
+          "display_url": "cnbcindonesia.com/market/2026103…",
+          "expanded_url": "https://www.cnbcindonesia.com/market/20261030091230-17-780825/kuartal-iii-2026-laba-bank-raya-rp21-miliar-kredit-digital-naik-20",
+          "indices": [70, 93],
+          "url": "https://t.co/ClEzriw7Jw"
+        }
+      ]
+    },
+    "reply_to_user_results": null,
+    "quoted_tweet_results": null,
+    "quoted_tweet": null,
+    "retweeted_tweet": null,
+    "isConversationControlled": false
+  }
+]
+```
+
 ---
 
 ## 🔒 Permissions Justification
@@ -146,7 +326,9 @@ media-fetch-chrome-plugin/
 ├── content.js             # Content script & DOM extractor for Instagram
 ├── content.css            # Styles for in-page toast alerts
 ├── tiktok-content.js      # Content script & DOM extractor for TikTok
+├── tiktok-interceptor.js  # Network response interceptor for TikTok API
 ├── threads-content.js     # Content script & DOM extractor for Threads
+├── x-interceptor.js       # Network response interceptor for Twitter/X GraphQL API
 ├── x-content.js           # Content script & DOM extractor for X / Twitter
 ├── manifest.json          # Chrome Extension Manifest V3 configuration
 ├── LICENSE                # MIT License

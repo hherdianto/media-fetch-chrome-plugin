@@ -4,6 +4,117 @@
 
   let isExtracting = false;
 
+  // In-memory cache for tweets & threads captured by x-interceptor.js
+  const interceptedTweets = new Map();
+  const interceptedThreads = new Map();
+  const MAX_INTERCEPT_CACHE = 100;
+
+  function cacheSet(map, key, value) {
+    if (map.size >= MAX_INTERCEPT_CACHE) {
+      const oldestKey = map.keys().next().value;
+      map.delete(oldestKey);
+    }
+    map.set(key, value);
+  }
+
+  // Listen for real-time broadcasts from x-interceptor.js (MAIN world)
+  window.addEventListener('X_INTERCEPTED_DATA', (e) => {
+    try {
+      const { type, payload } = e.detail || {};
+      if (type === 'thread' && payload) {
+        if (payload.rootId && payload.thread) {
+          cacheSet(interceptedThreads, String(payload.rootId), payload.thread);
+        }
+        if (payload.rootTweet && payload.rootTweet.id) {
+          cacheSet(interceptedTweets, String(payload.rootTweet.id), payload.rootTweet);
+        }
+        if (Array.isArray(payload.thread)) {
+          for (const t of payload.thread) {
+            if (t && t.id) cacheSet(interceptedTweets, String(t.id), t);
+          }
+        }
+      } else if (type === 'tweets' && Array.isArray(payload)) {
+        for (const t of payload) {
+          if (t && t.id) cacheSet(interceptedTweets, String(t.id), t);
+        }
+      }
+    } catch (_) {}
+  });
+
+  /**
+   * Helper to retrieve intercepted GraphQL data with request fallback
+   */
+  async function getInterceptedDataForStatus(targetStatusId) {
+    if (!targetStatusId) return null;
+    const strId = String(targetStatusId);
+
+    // 1. Direct thread match
+    if (interceptedThreads.has(strId)) {
+      const thread = interceptedThreads.get(strId);
+      const match = thread.find((t) => t.id === strId) || interceptedTweets.get(strId) || thread[0];
+      return {
+        thread,
+        mainPost: match
+      };
+    }
+
+    // 2. Search through all cached threads to see if strId is a reply within any thread
+    for (const thread of interceptedThreads.values()) {
+      if (Array.isArray(thread)) {
+        const match = thread.find((t) => t.id === strId);
+        if (match) {
+          return {
+            thread,
+            mainPost: match
+          };
+        }
+      }
+    }
+
+    // 3. Fallback to single tweet in cache
+    if (interceptedTweets.has(strId)) {
+      return {
+        thread: [interceptedTweets.get(strId)],
+        mainPost: interceptedTweets.get(strId)
+      };
+    }
+
+    // 4. Ask x-interceptor.js in MAIN world via CustomEvent
+    return new Promise((resolve) => {
+      let resolved = false;
+      const onResponse = (e) => {
+        if (String(e.detail?.targetId) === strId) {
+          window.removeEventListener('X_RESPOND_CAPTURED_DATA', onResponse);
+          resolved = true;
+          const { tweet, thread } = e.detail || {};
+          if (thread && Array.isArray(thread) && thread.length > 0) {
+            cacheSet(interceptedThreads, strId, thread);
+            for (const t of thread) if (t && t.id) cacheSet(interceptedTweets, String(t.id), t);
+            const focalMatch = thread.find((t) => t.id === strId) || tweet || thread[0];
+            resolve({ thread, mainPost: focalMatch });
+          } else if (tweet) {
+            cacheSet(interceptedTweets, strId, tweet);
+            resolve({ thread: [tweet], mainPost: tweet });
+          } else {
+            resolve(null);
+          }
+        }
+      };
+
+      window.addEventListener('X_RESPOND_CAPTURED_DATA', onResponse);
+      try {
+        window.dispatchEvent(new CustomEvent('X_REQUEST_CAPTURED_DATA', { detail: { targetId: strId } }));
+      } catch (_) {}
+
+      setTimeout(() => {
+        if (!resolved) {
+          window.removeEventListener('X_RESPOND_CAPTURED_DATA', onResponse);
+          resolve(null);
+        }
+      }, 300);
+    });
+  }
+
   /**
    * Helper: Parse formatted number strings accurately to integer.
    * Handles English (1.2K, 1.5M, 2B, 1,245) and Indonesian (1,2 rb, 1,5 jt, 1.245) formats.
@@ -167,13 +278,17 @@
   }
 
   /**
-   * Extract author information (displayName, handle, isVerified, avatarUrl)
+   * Extract author information (displayName, handle, isVerified, isBlueVerified, avatarUrl, coverPicture, etc.)
    */
   function extractAuthorInfo(articleEl, targetUsername) {
     let displayName = '';
     let handle = '';
     let isVerified = false;
+    let isBlueVerified = false;
     let avatarUrl = '';
+    let coverPicture = '';
+    let description = '';
+    let location = '';
 
     // 1. Avatar
     const avatarImg = articleEl.querySelector('div[data-testid*="Avatar" i] img, img[src*="profile_images"]');
@@ -185,9 +300,9 @@
     const userNameContainer = articleEl.querySelector('[data-testid="User-Name"], [data-testid*="user" i][data-testid*="name" i]');
     if (userNameContainer) {
       // Scope verified status strictly to author container first (avoids quote tweet verified leakage)
-      isVerified = Boolean(
-        userNameContainer.querySelector('[data-testid="icon-verified"], svg[aria-label*="Verified" i], svg[aria-label*="Terverifikasi" i], svg[data-testid*="verified" i]')
-      );
+      const verifiedSvg = userNameContainer.querySelector('[data-testid="icon-verified"], svg[aria-label*="Verified" i], svg[aria-label*="Terverifikasi" i], svg[data-testid*="verified" i]');
+      isVerified = Boolean(verifiedSvg);
+      isBlueVerified = isVerified;
 
       // Search profile link inside userNameContainer to get handle accurately from href
       const userLink = Array.from(userNameContainer.querySelectorAll('a[href^="/"]')).find((a) => {
@@ -208,9 +323,9 @@
         displayName = allText.slice(0, atIndex).replace(/[\r\n\t]+/g, ' ').trim();
       }
     } else {
-      isVerified = Boolean(
-        articleEl.querySelector('[data-testid="icon-verified"], svg[aria-label*="Verified" i], svg[aria-label*="Terverifikasi" i], svg[data-testid*="verified" i]')
-      );
+      const verifiedSvg = articleEl.querySelector('[data-testid="icon-verified"], svg[aria-label*="Verified" i], svg[aria-label*="Terverifikasi" i], svg[data-testid*="verified" i]');
+      isVerified = Boolean(verifiedSvg);
+      isBlueVerified = isVerified;
     }
 
     // 3. Scan profile links (a[href^="/"]) for display name and handle
@@ -259,7 +374,26 @@
     if (!handle && targetUsername) handle = targetUsername;
     if (!displayName) displayName = handle || targetUsername || 'X User';
 
-    return { displayName, handle, isVerified, avatarUrl };
+    // Optional page-level details if on profile page
+    const bannerImg = document.querySelector('img[src*="profile_banners"]');
+    if (bannerImg) coverPicture = bannerImg.src || bannerImg.getAttribute('src') || '';
+
+    const bioEl = document.querySelector('[data-testid="UserDescription"]');
+    if (bioEl) description = bioEl.innerText?.trim() || '';
+
+    const locEl = document.querySelector('[data-testid="UserLocation"]');
+    if (locEl) location = locEl.innerText?.trim() || '';
+
+    return {
+      displayName,
+      handle,
+      isVerified,
+      isBlueVerified,
+      avatarUrl,
+      coverPicture,
+      description,
+      location
+    };
   }
 
   /**
@@ -461,9 +595,396 @@
   }
 
   /**
+   * Helper: Format Date or ISO timestamp into Twitter format (Fri Oct 30 03:40:00 +0000 2026)
+   */
+  function formatTwitterDate(dateInput) {
+    if (!dateInput) {
+      dateInput = new Date();
+    }
+    if (typeof dateInput === 'string' && /^[A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{2}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\s+\d{4}$/.test(dateInput.trim())) {
+      return dateInput.trim();
+    }
+    const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const targetDate = isNaN(d.getTime()) ? new Date() : d;
+
+    const dayName = days[targetDate.getUTCDay()];
+    const monthName = months[targetDate.getUTCMonth()];
+    const dateNum = String(targetDate.getUTCDate()).padStart(2, '0');
+    const hours = String(targetDate.getUTCHours()).padStart(2, '0');
+    const minutes = String(targetDate.getUTCMinutes()).padStart(2, '0');
+    const seconds = String(targetDate.getUTCSeconds()).padStart(2, '0');
+    const year = targetDate.getUTCFullYear();
+
+    return `${dayName} ${monthName} ${dateNum} ${hours}:${minutes}:${seconds} +0000 ${year}`;
+  }
+
+  /**
+   * Extract Twitter Card link preview (summary_large_image, summary, etc.)
+   */
+  function extractCard(articleEl) {
+    if (!articleEl) return null;
+
+    const cardWrapper = articleEl.querySelector('[data-testid="card.wrapper"], [data-testid*="card" i]');
+    if (!cardWrapper) return null;
+
+    const cardLink = cardWrapper.closest('a') || cardWrapper.querySelector('a') || articleEl.querySelector('a[href*="t.co"]');
+    const cardUrl = cardLink?.href || '';
+    if (!cardUrl && !cardWrapper.innerText?.trim()) return null;
+
+    const cardImgEl = cardWrapper.querySelector('img');
+    const cardImgUrl = cardImgEl?.src || cardImgEl?.getAttribute('src') || '';
+
+    let cardTitle = '';
+    let cardDesc = '';
+    let cardDomain = '';
+
+    const textNodes = Array.from(cardWrapper.querySelectorAll('span, div[dir="auto"], div[dir="ltr"]'))
+      .map((el) => el.innerText?.trim())
+      .filter((t) => t && t.length > 0 && !t.includes('\n'));
+
+    // Deduplicate
+    const uniqueTexts = [];
+    textNodes.forEach((t) => {
+      if (!uniqueTexts.includes(t)) uniqueTexts.push(t);
+    });
+
+    for (const t of uniqueTexts) {
+      if (/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i.test(t)) {
+        if (!cardDomain) cardDomain = t;
+      } else if (!cardTitle) {
+        cardTitle = t;
+      } else if (!cardDesc && t !== cardTitle && t !== cardDomain) {
+        cardDesc = t;
+      }
+    }
+
+    if (!cardDomain && cardUrl) {
+      try {
+        cardDomain = new URL(cardUrl).hostname.replace(/^www\./, '');
+      } catch (_) {}
+    }
+
+    const bindingValues = [];
+
+    if (cardImgUrl) {
+      bindingValues.push({
+        key: 'photo_image_full_size_large',
+        value: {
+          image_value: { height: 340, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'thumbnail_image',
+        value: {
+          image_value: { height: 150, url: cardImgUrl, width: 266 },
+          type: 'IMAGE'
+        }
+      });
+    }
+
+    if (cardDesc) {
+      bindingValues.push({
+        key: 'description',
+        value: {
+          string_value: cardDesc,
+          type: 'STRING'
+        }
+      });
+    }
+
+    if (cardDomain) {
+      bindingValues.push({
+        key: 'domain',
+        value: {
+          string_value: cardDomain,
+          type: 'STRING'
+        }
+      });
+    }
+
+    if (cardImgUrl) {
+      bindingValues.push({
+        key: 'thumbnail_image_large',
+        value: {
+          image_value: { height: 320, url: cardImgUrl, width: 568 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'summary_photo_image_small',
+        value: {
+          image_value: { height: 202, url: cardImgUrl, width: 386 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'thumbnail_image_original',
+        value: {
+          image_value: { height: 366, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'photo_image_full_size_small',
+        value: {
+          image_value: { height: 202, url: cardImgUrl, width: 386 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'summary_photo_image_large',
+        value: {
+          image_value: { height: 340, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'thumbnail_image_small',
+        value: {
+          image_value: { height: 81, url: cardImgUrl, width: 144 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'thumbnail_image_x_large',
+        value: {
+          image_value: { height: 366, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'photo_image_full_size_original',
+        value: {
+          image_value: { height: 366, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+    }
+
+    if (cardDomain) {
+      bindingValues.push({
+        key: 'vanity_url',
+        value: {
+          scribe_key: 'vanity_url',
+          string_value: cardDomain,
+          type: 'STRING'
+        }
+      });
+    }
+
+    if (cardImgUrl) {
+      bindingValues.push({
+        key: 'photo_image_full_size',
+        value: {
+          image_value: { height: 314, url: cardImgUrl, width: 600 },
+          type: 'IMAGE'
+        }
+      });
+    }
+
+    if (cardTitle) {
+      bindingValues.push({
+        key: 'title',
+        value: {
+          string_value: cardTitle,
+          type: 'STRING'
+        }
+      });
+    }
+
+    if (cardImgUrl) {
+      bindingValues.push({
+        key: 'summary_photo_image_x_large',
+        value: {
+          image_value: { height: 366, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+      bindingValues.push({
+        key: 'summary_photo_image',
+        value: {
+          image_value: { height: 314, url: cardImgUrl, width: 600 },
+          type: 'IMAGE'
+        }
+      });
+    }
+
+    if (cardUrl) {
+      bindingValues.push({
+        key: 'card_url',
+        value: {
+          scribe_key: 'card_url',
+          string_value: cardUrl,
+          type: 'STRING'
+        }
+      });
+    }
+
+    if (cardImgUrl) {
+      bindingValues.push({
+        key: 'summary_photo_image_original',
+        value: {
+          image_value: { height: 366, url: cardImgUrl, width: 650 },
+          type: 'IMAGE'
+        }
+      });
+    }
+
+    return {
+      binding_values: bindingValues,
+      card_platform: {
+        platform: {
+          audience: { name: 'production' },
+          device: { name: 'Swift', version: '12' }
+        }
+      },
+      name: 'summary_large_image',
+      url: cardUrl,
+      user_refs_results: []
+    };
+  }
+
+  /**
+   * Extract tweet entities (URLs)
+   */
+  function extractEntities(articleEl, tweetText) {
+    const urls = [];
+    const linkEls = articleEl.querySelectorAll('[data-testid="tweetText"] a, a[href*="t.co"]');
+    linkEls.forEach((a) => {
+      const rawHref = a.getAttribute('href') || a.href || '';
+      const fullHref = a.href || rawHref;
+      const displayText = a.innerText?.trim() || '';
+      if (!displayText || displayText.startsWith('@') || displayText.startsWith('#')) return;
+
+      let expanded = a.getAttribute('title') || fullHref;
+      if (expanded.startsWith('/')) {
+        expanded = `https://x.com${expanded}`;
+      }
+      const tCoMatch = fullHref.match(/https?:\/\/t\.co\/[A-Za-z0-9]+/);
+      const tCoUrl = tCoMatch ? tCoMatch[0] : (fullHref.startsWith('http') ? fullHref : `https://t.co/${displayText}`);
+
+      let startIdx = tweetText.indexOf(tCoUrl);
+      if (startIdx === -1) startIdx = tweetText.indexOf(displayText);
+      if (startIdx === -1) startIdx = 0;
+      const endIdx = startIdx > 0 ? startIdx + (tCoMatch ? tCoUrl.length : displayText.length) : 0;
+
+      if (!urls.some((u) => u.url === tCoUrl)) {
+        urls.push({
+          display_url: displayText,
+          expanded_url: expanded,
+          indices: [startIdx, endIdx],
+          url: tCoUrl
+        });
+      }
+    });
+
+    return { urls };
+  }
+
+  /**
+   * Normalize any extracted tweet object to exact x.json schema
+   */
+  function normalizeToXSchema(data, opts = {}) {
+    const {
+      isReply = false,
+      inReplyToId = null,
+      conversationId = null,
+      inReplyToUserId = null,
+      inReplyToUsername = null
+    } = opts;
+
+    const id = String(data.id || '');
+    const userName = String(data.author?.userName || data.author?.username || data.author?.handle || '').replace(/^@/, '');
+    const name = String(data.author?.name || data.author?.displayName || userName || 'X User');
+    const url = data.url || (userName && id ? `https://x.com/${userName}/status/${id}` : (id ? `https://x.com/i/status/${id}` : ''));
+    const twitterUrl = data.twitterUrl || (userName && id ? `https://twitter.com/${userName}/status/${id}` : (id ? `https://twitter.com/i/status/${id}` : ''));
+
+    const effectiveConvId = conversationId || (isReply && inReplyToId ? inReplyToId : id);
+
+    const author = {
+      type: 'user',
+      userName,
+      url: userName ? `https://x.com/${userName}` : '',
+      twitterUrl: userName ? `https://twitter.com/${userName}` : '',
+      id: String(data.author?.id || ''),
+      name,
+      isVerified: Boolean(data.author?.isVerified ?? data.author?.verified),
+      isBlueVerified: Boolean(data.author?.isBlueVerified ?? data.author?.isVerified ?? data.author?.verified),
+      profilePicture: data.author?.profilePicture || data.author?.avatarUrl || data.author?.avatar || '',
+      coverPicture: data.author?.coverPicture || '',
+      description: data.author?.description || '',
+      location: data.author?.location || '',
+      followers: Number(data.author?.followers ?? 0),
+      following: Number(data.author?.following ?? 0),
+      status: data.author?.status || '',
+      canDm: Boolean(data.author?.canDm ?? false),
+      canMediaTag: Boolean(data.author?.canMediaTag ?? false),
+      createdAt: data.author?.createdAt ? (typeof data.author.createdAt === 'string' && /^[A-Z][a-z]{2}\s/.test(data.author.createdAt) ? data.author.createdAt : formatTwitterDate(data.author.createdAt)) : '',
+      entities: data.author?.entities || {
+        description: { urls: [] },
+        url: { urls: [] }
+      },
+      fastFollowersCount: Number(data.author?.fastFollowersCount ?? 0),
+      favouritesCount: Number(data.author?.favouritesCount ?? 0),
+      hasCustomTimelines: Boolean(data.author?.hasCustomTimelines ?? true),
+      isTranslator: Boolean(data.author?.isTranslator ?? false),
+      mediaCount: Number(data.author?.mediaCount ?? 0),
+      statusesCount: Number(data.author?.statusesCount ?? 0),
+      withheldInCountries: Array.isArray(data.author?.withheldInCountries) ? data.author.withheldInCountries : [],
+      affiliatesHighlightedLabel: data.author?.affiliatesHighlightedLabel || {},
+      possiblySensitive: Boolean(data.author?.possiblySensitive ?? false),
+      pinnedTweetIds: Array.isArray(data.author?.pinnedTweetIds) ? data.author.pinnedTweetIds : [],
+      profile_bio: data.author?.profile_bio || {},
+      isAutomated: Boolean(data.author?.isAutomated ?? false),
+      automatedBy: data.author?.automatedBy ?? null
+    };
+
+    const extendedEntities = data.extendedEntities || (Array.isArray(data.media) && data.media.length > 0 ? { media: data.media } : {});
+    const card = data.card !== undefined ? data.card : null;
+    const place = data.place || {};
+    const entities = data.entities || { urls: [] };
+
+    return {
+      type: 'tweet',
+      id,
+      url,
+      twitterUrl,
+      text: data.text || '',
+      source: data.source || '',
+      retweetCount: Number(data.retweetCount ?? data.metrics?.retweetCount ?? 0),
+      replyCount: Number(data.replyCount ?? data.metrics?.replyCount ?? 0),
+      likeCount: Number(data.likeCount ?? data.metrics?.likeCount ?? 0),
+      quoteCount: Number(data.quoteCount ?? 0),
+      viewCount: Number(data.viewCount ?? data.metrics?.viewCount ?? 0),
+      createdAt: formatTwitterDate(data.createdAt),
+      lang: String(data.lang || 'in'),
+      bookmarkCount: Number(data.bookmarkCount ?? data.metrics?.bookmarkCount ?? 0),
+      isReply,
+      inReplyToId,
+      conversationId: effectiveConvId,
+      inReplyToUserId,
+      inReplyToUsername,
+      isPinned: Boolean(data.isPinned ?? false),
+      author,
+      extendedEntities,
+      card,
+      place,
+      entities,
+      reply_to_user_results: data.reply_to_user_results ?? null,
+      quoted_tweet_results: data.quoted_tweet_results ?? null,
+      quoted_tweet: data.quoted_tweet ?? null,
+      retweeted_tweet: data.retweeted_tweet ?? null,
+      isConversationControlled: Boolean(data.isConversationControlled ?? false)
+    };
+  }
+
+  /**
    * Extract tweet detail from a single tweet container element.
    */
-  function extractTweetArticle(articleEl, targetStatusId = null) {
+  function extractTweetArticle(articleEl, targetStatusId = null, opts = {}) {
     if (!articleEl) return null;
 
     // 1. Time element & permalink
@@ -504,7 +1025,7 @@
     const author = extractAuthorInfo(articleEl, urlUsername);
 
     // 3. Text content
-    const tweetText = extractBodyText(articleEl, author.displayName, author.handle);
+    let tweetText = extractBodyText(articleEl, author.displayName, author.handle);
 
     // 4. Timestamp
     let createdAt = timeEl ? timeEl.getAttribute('datetime') : null;
@@ -514,7 +1035,7 @@
     if (!createdAt) {
       const textMatch = articleEl.innerText?.match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\s*·\s*[A-Za-z]{3}\s*\d{1,2},\s*\d{4}/i);
       if (textMatch) {
-        createdAt = textMatch[0];
+        createdAt = textMatch[0].replace(/·/g, ' ').replace(/\s+/g, ' ').trim();
       }
     }
 
@@ -529,17 +1050,34 @@
     // 7. Media items (photos / videos)
     const media = extractMedia(articleEl);
 
-    return {
+    // 8. Card extraction
+    const card = extractCard(articleEl);
+    if (card && card.url && !tweetText.includes(card.url)) {
+      tweetText = tweetText ? `${tweetText}\n${card.url}` : card.url;
+    }
+
+    // 9. Entities extraction
+    const entities = extractEntities(articleEl, tweetText);
+
+    // 10. Language
+    const tweetTextEl = articleEl.querySelector('[data-testid="tweetText"]');
+    const lang = tweetTextEl?.getAttribute('lang') || articleEl.querySelector('[lang]')?.getAttribute('lang') || 'in';
+
+    const rawData = {
       id: statusId || targetStatusId || '',
       url: fullUrl,
       text: tweetText,
       createdAt: createdAt || new Date().toISOString(),
+      lang,
       author: {
         name: author.displayName,
-        username: author.handle,
-        avatar: author.avatarUrl,
-        verified: author.isVerified,
-        isVerified: author.isVerified
+        userName: author.handle,
+        profilePicture: author.avatarUrl,
+        isVerified: author.isVerified,
+        isBlueVerified: author.isBlueVerified,
+        coverPicture: author.coverPicture,
+        description: author.description,
+        location: author.location
       },
       metrics,
       likeCount: metrics.likeCount,
@@ -547,8 +1085,13 @@
       replyCount: metrics.replyCount,
       bookmarkCount: metrics.bookmarkCount,
       viewCount: metrics.viewCount,
-      media: media.length > 0 ? media : undefined
+      quoteCount: 0,
+      media,
+      card,
+      entities
     };
+
+    return normalizeToXSchema(rawData, opts);
   }
 
   /**
@@ -764,13 +1307,18 @@
       mainArticle = tweetElements[0];
     }
 
-    const mainPost = extractTweetArticle(mainArticle, targetStatusId);
-    if (mainPost && (!mainPost.text && !mainPost.media)) {
+    const mainPost = extractTweetArticle(mainArticle, targetStatusId, { isReply: false });
+    if (!mainPost) {
+      throw new Error('Failed to parse main tweet element.');
+    }
+    if (!mainPost.text && (!mainPost.extendedEntities || !mainPost.extendedEntities.media)) {
       if (!mainPost.id) mainPost.id = targetStatusId || 'unknown';
     }
 
-    if (targetUsername && (!mainPost.author.username || mainPost.author.username === 'X User')) {
-      mainPost.author.username = targetUsername;
+    if (targetUsername && (!mainPost.author.userName || mainPost.author.userName === 'X User')) {
+      mainPost.author.userName = targetUsername;
+      mainPost.author.url = `https://x.com/${targetUsername}`;
+      mainPost.author.twitterUrl = `https://twitter.com/${targetUsername}`;
     }
 
     // 2. Extract reply comments from subsequent articles
@@ -779,8 +1327,8 @@
     if (mainPost.id) seenCommentIds.add(mainPost.id);
     if (mainPost.url) seenCommentIds.add(mainPost.url);
 
-    // Only look for comments if mainPost.replyCount > 0
-    if (mainPost.replyCount > 0) {
+    // Look for comments if mainPost.replyCount > 0 or additional tweet elements exist on page
+    if (mainPost.replyCount > 0 || tweetElements.length > 1) {
       // Find where "Discover more" or recommendations begin to prevent scraping recommended feed
       let discoverHeading = getDiscoverHeading();
 
@@ -798,24 +1346,20 @@
         const isFollowing = (mainArticle.compareDocumentPosition(art) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
         if (!isFollowing) return;
 
-        const replyData = extractTweetArticle(art);
+        const replyData = extractTweetArticle(art, null, {
+          isReply: true,
+          inReplyToId: mainPost.id,
+          conversationId: mainPost.id,
+          inReplyToUsername: mainPost.author.userName,
+          inReplyToUserId: mainPost.author.id || null
+        });
         if (!replyData) return;
 
         const replyId = replyData.id || replyData.url;
         if (replyId && !seenCommentIds.has(replyId)) {
           seenCommentIds.add(replyId);
           if (replyData.url) seenCommentIds.add(replyData.url);
-          comments.push({
-            id: replyData.id,
-            url: replyData.url,
-            text: replyData.text,
-            createdAt: replyData.createdAt,
-            author: replyData.author,
-            likeCount: replyData.likeCount,
-            retweetCount: replyData.retweetCount,
-            replyCount: replyData.replyCount,
-            media: replyData.media
-          });
+          comments.push(replyData);
         }
       });
 
@@ -837,24 +1381,20 @@
           const isFollowing = (mainArticle.compareDocumentPosition(art) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
           if (!isFollowing) return;
 
-          const replyData = extractTweetArticle(art);
+          const replyData = extractTweetArticle(art, null, {
+            isReply: true,
+            inReplyToId: mainPost.id,
+            conversationId: mainPost.id,
+            inReplyToUsername: mainPost.author.userName,
+            inReplyToUserId: mainPost.author.id || null
+          });
           if (!replyData) return;
 
           const replyId = replyData.id || replyData.url;
           if (replyId && !seenCommentIds.has(replyId)) {
             seenCommentIds.add(replyId);
             if (replyData.url) seenCommentIds.add(replyData.url);
-            comments.push({
-              id: replyData.id,
-              url: replyData.url,
-              text: replyData.text,
-              createdAt: replyData.createdAt,
-              author: replyData.author,
-              likeCount: replyData.likeCount,
-              retweetCount: replyData.retweetCount,
-              replyCount: replyData.replyCount,
-              media: replyData.media
-            });
+            comments.push(replyData);
           }
         });
 
@@ -862,10 +1402,9 @@
       }
     }
 
-    mainPost.comments = comments;
-    mainPost.commentCount = Math.max(mainPost.replyCount || 0, comments.length);
+    const allPosts = [mainPost, ...comments];
 
-    return mainPost;
+    return { mainPost, comments, allPosts };
   }
 
   /**
@@ -897,15 +1436,103 @@
       const targetUsername = identifier.username;
 
       showToast({
-        title: 'Scraping X Tweet...',
+        title: 'Extracting X Tweet...',
         message: targetUsername ? `@${targetUsername}` : 'Reading content...',
         type: 'info'
       });
 
-      // Quick delay to ensure client rendering if recently navigated
-      await new Promise((r) => setTimeout(r, 350));
+      // Quick delay to allow in-flight GraphQL responses to arrive if recently navigated
+      await new Promise((r) => setTimeout(r, 200));
 
-      const postData = await extractXPostFromDom(targetStatusId, targetUsername);
+      let mainPost = null;
+      let allPosts = [];
+
+      // 1. Run DOM extraction in parallel to have visible rendered text & comments ready
+      let domResult = null;
+      try {
+        domResult = await extractXPostFromDom(targetStatusId, targetUsername);
+      } catch (domErr) {
+        console.warn('[X Extractor] DOM extraction error (will rely on interceptor):', domErr);
+      }
+
+      // 2. Check intercepted GraphQL TweetDetail payload (from x-interceptor.js)
+      let intercepted = await getInterceptedDataForStatus(targetStatusId);
+
+      // If not yet present, wait a short moment and check again
+      if (!intercepted) {
+        await new Promise((r) => setTimeout(r, 200));
+        intercepted = await getInterceptedDataForStatus(targetStatusId);
+      }
+
+      if (intercepted && intercepted.mainPost) {
+        console.log('[X Extractor] Successfully using intercepted GraphQL TweetDetail for ID:', targetStatusId);
+        mainPost = intercepted.mainPost;
+        allPosts = Array.isArray(intercepted.thread) && intercepted.thread.length > 0
+          ? [...intercepted.thread]
+          : [mainPost];
+
+        // 3. Reconcile with DOM: if text or metrics are missing in GraphQL payload, backfill from DOM!
+        if (domResult) {
+          const domMap = new Map();
+          if (domResult.mainPost && domResult.mainPost.id) {
+            domMap.set(domResult.mainPost.id, domResult.mainPost);
+          }
+          if (Array.isArray(domResult.comments)) {
+            for (const c of domResult.comments) {
+              if (c && c.id) domMap.set(c.id, c);
+            }
+          }
+
+          // Backfill mainPost text if GraphQL text was empty
+          const domMain = domMap.get(mainPost.id) || domResult.mainPost;
+          if (domMain && domMain.text && (!mainPost.text || !mainPost.text.trim())) {
+            console.log('[X Extractor] Backfilling mainPost text from DOM:', domMain.text.slice(0, 50));
+            mainPost.text = domMain.text;
+          }
+          if (domMain && (!mainPost.createdAt || mainPost.createdAt.length < 5) && domMain.createdAt) {
+            mainPost.createdAt = domMain.createdAt;
+          }
+          if (domMain && mainPost.likeCount === 0 && domMain.likeCount > 0) {
+            mainPost.likeCount = domMain.likeCount;
+            mainPost.replyCount = domMain.replyCount || mainPost.replyCount;
+            mainPost.retweetCount = domMain.retweetCount || mainPost.retweetCount;
+            mainPost.viewCount = domMain.viewCount || mainPost.viewCount;
+          }
+
+          // Backfill every post in allPosts if its text or timestamp is empty
+          const existingIds = new Set(allPosts.map((p) => p.id));
+          for (const p of allPosts) {
+            const domItem = domMap.get(p.id);
+            if (domItem) {
+              if (domItem.text && (!p.text || !p.text.trim())) {
+                p.text = domItem.text;
+              }
+              if (domItem.createdAt && (!p.createdAt || p.createdAt.length < 5)) {
+                p.createdAt = domItem.createdAt;
+              }
+              if (p.likeCount === 0 && domItem.likeCount > 0) {
+                p.likeCount = domItem.likeCount;
+              }
+            }
+          }
+
+          // Also append any extra DOM comments not yet in intercepted thread
+          if (Array.isArray(domResult.comments)) {
+            for (const c of domResult.comments) {
+              if (c && c.id && !existingIds.has(c.id)) {
+                allPosts.push(c);
+                existingIds.add(c.id);
+              }
+            }
+          }
+        }
+      } else if (domResult && domResult.mainPost) {
+        console.log('[X Extractor] Intercepted data not found, using full DOM extraction...');
+        mainPost = domResult.mainPost;
+        allPosts = domResult.allPosts;
+      } else {
+        throw new Error('Failed to extract tweet from either GraphQL interceptor or page DOM.');
+      }
 
       // Save to background storage (x_posts -> x.json)
       const saveResponse = await new Promise((resolve) => {
@@ -913,7 +1540,7 @@
           {
             action: 'save_post',
             platform: 'x',
-            postData
+            postData: allPosts
           },
           (res) => {
             if (chrome.runtime.lastError) {
@@ -931,15 +1558,16 @@
 
       showToast({
         title: saveResponse.isUpdate ? 'X Tweet Updated!' : 'X Tweet Saved!',
-        message: postData.text ? (postData.text.length > 60 ? postData.text.slice(0, 60) + '...' : postData.text) : `@${postData.author.username}`,
+        message: mainPost.text ? (mainPost.text.length > 60 ? mainPost.text.slice(0, 60) + '...' : mainPost.text) : `@${mainPost.author.userName}`,
         type: 'success',
         badge: `Total: ${saveResponse.totalCount.toLocaleString('en-US')} tweets`,
-        meta: `❤️ ${postData.likeCount.toLocaleString('en-US')} • 💬 ${(postData.comments?.length || 0).toLocaleString('en-US')} comments`
+        meta: `❤️ ${mainPost.likeCount.toLocaleString('en-US')} • 💬 ${mainPost.replyCount.toLocaleString('en-US')} replies`
       });
 
       return {
         success: true,
-        post: postData,
+        post: mainPost,
+        allPosts,
         isUpdate: saveResponse.isUpdate,
         totalCount: saveResponse.totalCount
       };
