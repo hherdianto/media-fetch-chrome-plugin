@@ -341,7 +341,7 @@
   function verifyContainerBelongsToId(container, videoId) {
     if (!container || !videoId) return false;
     const sId = String(videoId).trim();
-    if (!sId) return false;
+    if (!sId || !/^\d+$/.test(sId)) return false;
 
     // If container is document.body, it only belongs to videoId if the current URL actually contains videoId
     if (container === document.body) {
@@ -400,7 +400,7 @@
   function findContainerForVideoId(videoId) {
     if (!videoId) return null;
     const sId = String(videoId).trim();
-    if (!sId) return null;
+    if (!sId || !/^\d+$/.test(sId)) return null;
 
     // 1. Check open modals first
     const modals = Array.from(document.querySelectorAll(
